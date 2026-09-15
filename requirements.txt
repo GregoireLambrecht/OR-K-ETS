@@ -1,0 +1,11 @@
+# Core dependencies, pinned at the versions the paper was produced with
+# (Python 3.14). See requirements-freeze.txt for the full environment.
+jax[cuda13]==0.9.2
+jaxlib==0.9.2
+equinox==0.13.6
+optax==0.2.8
+numpy==2.4.3
+scipy==1.17.1
+pandas==3.0.1
+matplotlib==3.10.8
+seaborn==0.13.2

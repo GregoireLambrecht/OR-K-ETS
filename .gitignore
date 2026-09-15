@@ -1,0 +1,33 @@
+# ── results and trained networks: never in git ────────────────────────────────
+# The previous repo grew to 13 GB because .eqx policies and result CSVs were
+# committed; they live on scratch and in /archive, not here.
+# Exceptions: artifacts/ (five compressed tarballs, ~141 MB, holding the frozen
+# snapshot the paper used) and figs_audit/ (the final figures, ~2 MB).
+results*/
+results_floor*/
+mm_warmstart*/
+*.eqx
+*.npz
+
+# ── slurm: cluster wrappers and their logs, specific to the authors' machine ──
+logs/
+run_*.sh
+slurm-*.out
+slurm-*.err
+*.sbatch
+
+# ── internal notes, references, smoke test ──────────────────────────────────
+AGENT_README.md
+LITTERATURE/
+smoke_rung3.py
+results_smoke_r3/
+
+# ── python ───────────────────────────────────────────────────────────────────
+__pycache__/
+*.pyc
+.ipynb_checkpoints/
+.venv/
+
+# ── local scratch ────────────────────────────────────────────────────────────
+*.tmp
+.DS_Store
