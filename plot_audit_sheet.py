@@ -163,7 +163,7 @@ def sheet(study, outdir):
                  color=INK, fontsize=12.5, x=0.005, ha='left', y=0.995)
     fig.tight_layout(rect=(0, 0.025, 1, 0.975))
     name = os.path.basename(study.rstrip('/'))
-    out = _save(fig, os.path.join(outdir, f'audit_sheet_{name}.pdf'))
+    out = _save(fig, os.path.join(outdir, f'sheet_{name.replace("results_", "")}.pdf'))
     print(f"-> {out} (+ .png)" + ("" if have_paths else
           "   [no paths.json yet: column 3 empty for the audit rows]"))
 
@@ -172,4 +172,4 @@ if __name__ == '__main__':
     studies = sys.argv[1:] or ['results_floor20', 'results_floor30',
                                'results_floor40']
     for s in studies:
-        sheet(s, 'figs_audit')
+        sheet(s, 'figs_audit/seed42/exploitability')

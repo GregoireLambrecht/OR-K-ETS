@@ -144,4 +144,4 @@ fig.suptitle("PMFG audit — the four policy scenarios "
              "market in each run)",
              color=INK, fontsize=12.5, x=0.005, ha="left", y=0.99)
 fig.tight_layout(rect=(0, 0.05, 1, 0.95))
-print(f"\n-> {_save(fig, 'figs_audit/audit_scenarios.pdf')} (+ .png)")
+print(f"\n-> {_save(fig, 'figs_audit/seed42/exploitability/bars_all_floors.pdf')} (+ .png)")

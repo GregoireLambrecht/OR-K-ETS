@@ -1186,6 +1186,17 @@ def fictitious_play_rung2(env, gamma_ref=GAMMA_REF, K=50,
             stacked, jax.random.fold_in(k_iter_base, k), stage_fns, optimizer,
             mm_warm, T_grid, iters, lrs, verbose=verbose)
         br_secs = time.time() - t_br
+
+        # full BR training curves on disk, as Rung 3 does (the record keeps
+        # only the last value)
+        loss_file = None
+        if save_dir:
+            os.makedirs(os.path.join(save_dir, 'losses'), exist_ok=True)
+            loss_file = os.path.join('losses', f'br_loss_{k+1:03d}.npz')
+            np.savez_compressed(
+                os.path.join(save_dir, loss_file),
+                **{f'stage{i}_T{T}': np.asarray(L, dtype=np.float32)
+                   for i, (T, L) in enumerate(zip(T_grid, loss_hist))})
         if verbose:
             print(f"    trained in {_hms(br_secs)}", flush=True)
 
@@ -1230,6 +1241,7 @@ def fictitious_play_rung2(env, gamma_ref=GAMMA_REF, K=50,
             'A_final_p90': float(np.quantile(np.asarray(A_ver)[:, -1], .9)),
             'A_on_floor': float(np.mean(np.asarray(A_ver) <= floor + 1e-6)),
             'br_seconds': br_secs,
+            'br_loss_file': loss_file,
             'br_loss_last': [[float(L[-1, j]) for j in range(N_TYPES)]
                              for L in loss_hist],
         }
