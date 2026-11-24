@@ -311,9 +311,8 @@ conditioned on it (FiLM). The extended values of all players are $Q$-averages of
 nonnegative gaps, so the almost-everywhere argument of the paper applies to the
 majors unchanged.
 
-**Limits.** $N_0 = 1$: one aggregate major, maximal market power. $N_0 \to \infty$: each
-major's impact vanishes and the model reduces to the market-clearing model of branch
-`market-clearing` (type 2 as a price-taking population).
+**Number of majors.** $N_0 = 1$: one aggregate major (the KEPCO group), maximal market
+power. $N_0 > 1$: competing generators, each internalizing its own, smaller impact.
 
 ---
 
@@ -514,7 +513,7 @@ for iteration k = 1 .. K:
    Its gain over the price-taking type-2 policy measures the market power left on the
    table. If it is small, report it and keep the mean-field model.
 3. If the gain is significant: full Algorithm 3 with $N_0 = 1$.
-4. Robustness: $N_0 \in \{1, 5, \infty\}$, where $\infty$ is the `market-clearing` model.
+4. Robustness: $N_0 = 5$ competing generators, against $N_0 = 1$.
 5. Audits of Algorithm 4.
 
 ## 12. Paper changes
@@ -526,7 +525,7 @@ for iteration k = 1 .. K:
   minors and re-clearing for majors.
 - §3: Algorithms 1–3, the IFT gradient, myopic vs full training.
 - §4: the market-power results — price impact, fill crowding at the floor, manipulation
-  of the K-ETS penalty index $\tilde A_T$ — and the sweep over $N_0$.
+  of the K-ETS penalty index $\tilde A_T$ — and the comparison $N_0 = 1$ against $N_0 = 5$.
 
 ## 13. Open choices
 
