@@ -90,10 +90,12 @@ needed.
 ### 1.3 Excess demand and the unconstrained clearing price
 
 With the context weights $w_j$ (`context_weights()`, a function of $\mathfrak n_3$ in $\gamma$)
-and $k$ components in the mixture,
+and $n$ simulated agents per type, agent $(j,i)$ following its own drawn component
+$l^{j,i}$ of the mixture (§1.8),
 
 $$
-D_t(a) = \sum_{j} w_j \, \frac{1}{k\, n_j} \sum_{l=0}^{k-1} \sum_{i=1}^{n_j} f^{j,i,l}_t(a) \;-\; S_t(a) .
+D_t(a) = \sum_{j} w_j \, \frac{1}{n} \sum_{i=1}^{n} f^{j,i}_t(a) \;-\; S_t(a),
+\qquad f^{j,i}_t \text{ given by the schedule of } \vartheta^{j, l^{j,i}} .
 $$
 
 $D_t$ is continuous and strictly decreasing, with slope at most $-s_1$. The
@@ -200,6 +202,65 @@ Consequences, most of which hold already:
 - $A_0$ (the first cleared price) is now an **output**. Whether it is close to 6.05
   at $\gamma^{\text{ref}}$ is a calibration check, not an input.
 
+### 1.8 Simulating the population: one control per agent
+
+**Current scheme (block).** Each market simulates every one of the $k$ components of
+the mixture, with $N_j$ particles each, averaged with weights $1/k$: $k\, N_j$
+particles per type. The cost of an FP iteration grows with $k$, so a full solve costs
+$O(K^2)$. This is the quadratic runtime of Fig. 3 of the paper.
+
+**New scheme (per agent).** Each market simulates a **fixed** number $n$ of agents per
+type $j$, and each agent draws its own component:
+
+$$
+l^{j,i} \in \{0, \dots, k-1\}, \qquad i = 1, \dots, n, \qquad
+\text{agent } (j,i) \text{ follows } \bar\pi^{j,\, l^{j,i}} \text{ for the whole year.}
+$$
+
+This is the direct Monte Carlo of the definition of a population control: each member
+of the population draws its own control $U^j \sim \sigma^j$ (Definition 3 of the paper).
+The block scheme is the special case $n = k N_j$ with perfect stratification.
+
+- **Cost:** $O(n)$ per step and type instead of $O(k N_j)$, so an FP iteration has a
+  constant cost and a full solve costs $O(K)$. This makes 100–200 FP iterations
+  affordable; exploitability was still decreasing at $K = 50$.
+- **Bias:** none for the mixture, up to the finite-population error of order $1/n$,
+  the same order as today.
+- **Draw per agent, never per market** (for the minors). Putting all $n$ agents of type
+  $j$ on one drawn component would coordinate the whole type in that market. Clearing
+  and the dynamics are nonlinear in the population's behaviour, so averaging such
+  markets is a biased estimate of a *different* object, not a noisier estimate of the
+  mixture. (One draw per market is the right rule for a **major** player only; not on
+  this branch.)
+
+**Stratified assignment.** Rather than i.i.d. draws, spread the agents evenly over the
+components with a random offset drawn per market:
+
+$$
+l^{j,i} = \Big(o^j + \Big\lfloor \frac{i\, k}{n} \Big\rfloor\Big) \bmod k, \qquad o^j \sim \text{Unif}\{0, \dots, k-1\} .
+$$
+
+- If $n \ge k$, every component appears in every market, with $\lfloor n/k \rfloor$ or
+  $\lceil n/k \rceil$ agents.
+- If $n < k$, each market sees an evenly spread subset of the components, and the
+  offset makes the scheme unbiased across markets.
+- Choose $n \ge K_{\max}$, e.g. $n = 128$ to $256$ per type. With the weights $w_j$
+  carrying the proportions, use the **same** $n$ for every type, so the shapes no
+  longer depend on $\mathfrak n_3$.
+- The formula only needs $k$ as an integer, which can be a traced value. With the
+  mixture stored in a fixed buffer of size $K_{\max}$ (unused slots never drawn), the
+  population step compiles **once** for the whole solve instead of once per FP
+  iteration, as happens today because the stacked mixture changes shape.
+
+**Exploitability.** Keep the average reward $J^j$ of the mixture **exact** at first:
+`make_batched_hist_fn_r3` rolls out every component on the frozen blocks. It runs once
+per iteration, so its cost is moderate, and the convergence diagnostic stays as
+precise as before. If it becomes the bottleneck, sample the evaluation agents'
+components the same way, enumerating them exactly when $M_{\text{eval}} \ge k$.
+
+**Flag.** `POP_SAMPLING = 'agent' | 'block'`, default `'agent'`. Keep `'block'` for
+the equivalence check of §4.
+
 ---
 
 ## 2. Code changes, file by file
@@ -216,6 +277,11 @@ CLEAR_ITERS  = 40             # bisection halvings on [A_floor, A_hi]
 SIGMA_S      = 0.05 * CAP_F_BASE * MEAN_MARKET_IMPACT   # exogenous supply shock scale, TO CALIBRATE
 S1           = 0.5 * CAP_F_BASE * MEAN_MARKET_IMPACT / A0_BASE  # supply elasticity, > 0, TO CALIBRATE
 FLOOR_MODE   = os.environ.get('KETS_FLOOR_MODE', 'block')        # 'block' | 'support'
+
+# ── population sampling (§1.8) ───────────────────────────────────────────────
+POP_SAMPLING = os.environ.get('KETS_POP_SAMPLING', 'agent')      # 'agent' | 'block'
+N_SIM        = 128            # simulated agents per type and market ('agent' mode); >= K_MAX
+K_MAX        = 200            # size of the fixed mixture buffer
 
 def supply_noise_base(key, T):
     """Standard normal draws; scaled by SIGMA_S * sqrt(dt) in the clearing step."""
@@ -252,6 +318,19 @@ return jnp.stack([
   softplus$^{-1}(0.9) \approx 0.37$.
 - Checkpoints from `main` are **not loadable** (different output shape). Always use
   new result directories, e.g. `results_mc_floor30/choice`.
+- Add, next to `apply_stacked`, a gather-based application for the per-agent
+  sampling of §1.8:
+
+  ```python
+  def apply_gathered(stacked, static, comp, X):
+      """stacked: params with leading dim K_MAX.  comp: (n,) component indices.
+      X: (n, in_dim) -> (n, 4). Agent i uses the parameters of component comp[i]."""
+      params_i = jax.tree_util.tree_map(lambda p: p[comp], stacked)
+      return jax.vmap(lambda p, x: eqx.combine(p, static)(x))(params_i, X)
+  ```
+
+  The gathered parameters cost $n \times$ one network per type, which is small for a
+  3×64 trunk with FiLM.
 
 ### 2.3 `envs/environment.py`
 
@@ -317,8 +396,8 @@ def clear(self, orders_fn, eps_t, cap_total):
 ```
 
 `orders_fn(a)` is closed form once $(\alpha, \beta, lo, hi)$ are computed: per type $j$,
-the weighted means over the `(K, n_j)` particles of the positive and negative parts
-of `order_at`. So there is **one** network forward pass per step; the bisection and
+the weighted means over the $n$ simulated agents (or the `(K, n_j)` particles in
+`'block'` mode) of the positive and negative parts of `order_at`. So there is **one** network forward pass per step; the bisection and
 the rationing are pure arithmetic. The bisection is skipped in effect when the floor
 binds (its result is discarded), so it can run unconditionally for `vmap`.
 
@@ -327,8 +406,11 @@ binds (its result is discarded), so it can run unconditionally for `vmap`.
 logic. Replace it with a single private method so they cannot drift apart:
 
 ```python
-def _population_step(self, stacked, statics, Xs, t_idx, P_traj, eps0, idio_pop, w):
+def _population_step(self, stacked, statics, comp, Xs, t_idx, P_traj, eps0, idio_pop, w):
+    # 0. 'agent' mode: Xs[j] is (n, 16) and comp[j] is (n,), drawn once per market (§1.8);
+    #    'block' mode: Xs[j] is (K, n_j, 16) and comp is unused (today's layout)
     # 1. one forward pass per type on the pre-trade states
+    #    ('agent': apply_gathered(stacked[j], statics[j], comp[j], norm(Xs[j])))
     # 2. schedule_params per particle
     # 3. A_t, rho_t, G_t = clear(orders_fn, eps0[t_idx], cap_total=sum_j w_j * C^{f,j})
     # 4. f = order_at(..., A_t);  f_exec = executed(f, rho_t)
@@ -352,6 +434,11 @@ Then:
   `rho_traj[t_idx + 1]`, then reward and dynamics as before. The deviator is a
   price-taker: it treats both paths as exogenous, and the pathwise gradient flows
   through $\hat f = \rho_t f$ with $\rho_t$ fixed.
+- `population_initial_states`: in `'agent'` mode, return one `(N_SIM, 16)` array per
+  type; the type counts no longer depend on `financial_inst` (the proportions enter
+  only through `context_weights`). Add
+  `population_components(key, k)` returning, per type $j$, the `(N_SIM,)` stratified
+  indices $l^{j,i} = (o^j + \lfloor i k / n \rfloor) \bmod k$ of §1.8.
 - `create_initial_state`: slot `A` is $A_{\text{ref}}$ (pass `A_REF`; same value as today).
 - `compute_next_A`, `compute_next_A_weighted`: no longer called. Keep them, marked legacy.
 - `reward_scale`: uses `self.A0` = `A0_BASE`, a **constant**, so leave it. It is a
@@ -371,6 +458,17 @@ Then:
   diagnostics of §5, using `return_diag=True` on the block's price evaluation.
 - `fictitious_play_rung3`: no logic change. `policy_0` is a fresh network, which with
   the centered parametrization is close to "no trade at an unchanged price".
+- **Per-agent sampling (§1.8):**
+  - Store the mixture in a fixed buffer of size `K_MAX` per type and pass the current
+    size `k` as a traced integer, so the jitted price and best-response functions
+    compile once per solve.
+  - `sample_market` draws one component key per market, alongside γ and the common
+    noise; `prices` calls `population_components` with it. The population's
+    idiosyncratic noise becomes `(N_SIM, T)` per type.
+  - Frozen validation blocks: draw the assignment from the block's seed folded with
+    `k` (`jax.random.fold_in(seed, k)`), so a block is reproducible at a given
+    iteration.
+  - `make_batched_hist_fn_r3` (exact $J^j$) is unchanged.
 
 ### 2.5 Entry points: `main_rung3.py`, `pretrain_mm_r3.py`, `audit_pmfg.py`, `audit_paths.py`
 
@@ -420,6 +518,12 @@ Then:
 9. **Deviator consistency.** A deviator holding the same parameters as a
    single-component mixture gets the same return as that component's particles,
    up to idiosyncratic noise, including on paths where the floor binds.
+10. **Stratification.** For $n \ge k$, every component gets $\lfloor n/k \rfloor$ or
+    $\lceil n/k \rceil$ agents; over many offsets, each component's frequency is $1/k$.
+11. **Agent = block in the stratified limit.** With $n = k N_j$, offset 0 and the same
+    idiosyncratic draws, $\lfloor i k / n \rfloor = \lfloor i / N_j \rfloor$ assigns exactly
+    $N_j$ agents to each component, so `'agent'` mode reproduces the `'block'` price
+    path to floating-point precision.
 
 ## 4. Smoke run before the 30-hour solve
 
@@ -434,6 +538,13 @@ Accept when:
 - the interior residual $\max \lvert D_t(A_t) \rvert$ is below 1e-6 (relative);
 - exploitability decreases over the 5 iterations;
 - no NaN appears in $\alpha$, $\beta$ or $\rho$.
+
+**Sampling check (once, for the paper).** Run the same short configuration with
+`KETS_POP_SAMPLING=block` and `KETS_POP_SAMPLING=agent` (e.g. $T = 50$, $K = 10$,
+one seed, `N_SIM` ≥ 10). The price paths, the fill ratios $\rho_t$ and the
+exploitability per type $j$ should agree within the seed-to-seed noise. Report it in
+one sentence and an appendix figure. Also record the time per FP iteration in both
+modes: constant in `'agent'` mode, growing with $k$ in `'block'` mode.
 
 ## 5. Diagnostics to report (progress.json, per block)
 
@@ -456,9 +567,11 @@ $\mathbb P(\text{aggregate short}) \approx 1/\kappa^2$.
 
 ## 6. Phases
 
-1. **Core** (§2.1–2.3 and the tests): params, network head, clearing, rationing, rollouts.
-2. **FP and warm start** (§2.4–2.5): the smoke run of §4, then the full solves on
-   `results_mc_floor{20,30,40}` in `block` mode.
+1. **Core** (§2.1–2.3 and the tests): params, network head, clearing, rationing,
+   per-agent population sampling, rollouts.
+2. **FP and warm start** (§2.4–2.5): the smoke run and the sampling check of §4, then
+   the full solves on `results_mc_floor{20,30,40}` in `block` floor mode, with
+   per-agent sampling and more FP iterations (e.g. 100) at the same wall time.
 3. **Support mode.** The same solves with `--floor-mode support`, for the comparison
    of a blocking floor against a reserve-backed one.
 4. **Unrestricted audit.** In `audit_pmfg.py`, add `--unrestricted`: the specialist
@@ -487,6 +600,11 @@ $\mathbb P(\text{aggregate short}) \approx 1/\kappa^2$.
 - §3: the particle step (particle_h) becomes the clearing step, which returns the
   price and the fill ratio. FP and the best responses are unchanged; the deviating
   agent faces frozen $(A_t, \rho_t)$.
+- §3, simulating the population: replace eq. (particle_h), which averages all $k$
+  components with $N_j$ particles each, by the per-agent scheme of §1.8, presented as
+  the Monte Carlo of the definition of a population control. State the complexity:
+  $O(n)$ per step and type instead of $O(k N_j)$, hence $O(K)$ for a solve instead of
+  $O(K^2)$, and redo the runtime figure.
 - §4: report the diagnostics of §5, the conservation of allowances, and the
   `block` / `support` comparison (blocked liquidity against the cost of support).
 
