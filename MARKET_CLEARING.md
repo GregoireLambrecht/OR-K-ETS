@@ -73,7 +73,7 @@ Production and the fuel share stay as they are, computed from the pre-trade stat
 ### 1.2 Exogenous traders: a random net supply
 
 $$
-S_t = \sigma_S\, \varepsilon^{0,2}_t \sqrt{dt} .
+S_t = \sigma_S(\gamma)\, \varepsilon^{0,2}_t \sqrt{dt} .
 $$
 
 $S_t$ is in allowances per unit mass of agents. It is a net supply: positive means the
@@ -83,6 +83,30 @@ order $f^{S}_t = -S_t$. `eps0` keeps its shape and seeds; only its meaning chang
 from a price shock to a supply shock. The shocks have mean zero, so over the year the
 exogenous traders add no allowances on average, and the cap stays the total free
 allocation.
+
+**Scale of the shock: proportional to the allowances of the scenario.** The shocks are
+read as coming from the allowances in circulation, so their size scales with the total
+free allocation of the market's own scenario $\gamma$:
+
+$$
+\Theta(\gamma) = \sum_j w_j(\gamma)\, \theta^j_0(\gamma), \qquad
+\sigma_S(\gamma) = \frac{c\, \Theta(\gamma)}{\sqrt{365}}, \qquad c = 1\% .
+$$
+
+- The cumulative exogenous supply over the year has standard deviation $c\,\Theta(\gamma)$,
+  1% of the cap, whatever the number of steps $T$ (with $dt = 365/T$).
+- $\Theta(\gamma)$ depends on the allocation level $\tilde\theta^0$ and on $\mathfrak n_3$ (fewer
+  producers, fewer allowances per unit mass). Compute it per market from the context
+  weights and the initial holdings (`bind_env`), so it is vmapped like the rest; the
+  networks see $\gamma$ through FiLM and learn the scenario-dependent noise as is.
+- Orders of magnitude (daily trading capacity of the market about 154 at
+  $\gamma^{\text{ref}}$): $\Theta \approx 13{,}900$ gives a daily standard deviation of about 7.3,
+  roughly 4.7% of capacity; at $\tilde\theta^0 = 1.2$, about 9.7 a day; at $\tilde\theta^0 = 0$, no
+  supply shock (only the electricity price remains random).
+- **To state in the paper:** the allocation lever has two effects, more allowances and
+  more volatile exogenous supply, so the sensitivity surfaces over $\tilde\theta^0$ include
+  its effect on volatility. If the two must be separated, run a second solve with
+  $\sigma_S$ fixed at $\sigma_S(\gamma^{\text{ref}})$.
 
 **No price-elastic term.** An earlier version of this document had
 $S_t(a) = \sigma_S \varepsilon^{0,2}_t \sqrt{dt} + s_1 (a - A_{\text{ref}})$. It is removed: outside
@@ -287,7 +311,7 @@ A_REF        = A0_BASE        # pre-open price A^pre_0 (tie-breaker of the selec
 A_CEIL       = 200.0          # artificial ceiling (USD), for existence only; must essentially never bind
 BETA_MIN     = 0.1            # floor on the schedule slope (normalised price units)
 CLEAR_ITERS  = 40             # bisection halvings per side on [A_floor, A_CEIL]
-SIGMA_S      = 0.05 * CAP_F_BASE * MEAN_MARKET_IMPACT   # exogenous supply shock scale, TO CALIBRATE
+SHOCK_SHARE  = 0.01           # c: yearly std of exogenous supply = 1% of the scenario's allocation
 FLOOR_MODE   = os.environ.get('KETS_FLOOR_MODE', 'block')        # 'block' | 'support'
 
 # ── population sampling (§1.8) ───────────────────────────────────────────────
@@ -296,11 +320,13 @@ N_SIM        = 128            # simulated agents per type and market ('agent' mo
 K_MAX        = 200            # size of the fixed mixture buffer
 
 def supply_noise_base(key, T):
-    """Standard normal draws; scaled by SIGMA_S * sqrt(dt) in the clearing step."""
+    """Standard normal draws; scaled by sigma_S(gamma) * sqrt(dt) in the clearing step."""
     return jax.random.normal(key, (T,))
 ```
 
-There is **no** `S1`: the exogenous supply does not depend on the price (§1.2). Read
+There is no constant `SIGMA_S`: the scale $\sigma_S(\gamma) = c\,\Theta(\gamma)/\sqrt{365}$ is computed
+per market from the scenario (§1.2, §2.3). There is **no** `S1` either: the exogenous
+supply does not depend on the price. Read
 `FLOOR_MODE` once at import, like `FLOOR_MAX`, and record it in `progress.json`.
 
 Keep `market_impact_base` and `white_noise_A_base` so `main` still runs, but do not
@@ -365,10 +391,20 @@ def executed(self, f, rho_sell, rho_buy):
     """Executed trade: each side scaled by its fill ratio (1 when not rationed)."""
     return jnp.where(f >= 0.0, rho_buy * f, rho_sell * f)
 
+def sigma_S(self):
+    """sigma_S(gamma) = c * Theta(gamma) / sqrt(365), Theta = total free allocation per unit mass
+    of the bound scenario (context weights x initial holdings of each type)."""
+    w     = self.context_weights()
+    theta = jnp.stack([self.type_initial_state(j)[1] for j in range(N_TYPES)])
+    return SHOCK_SHARE * jnp.sum(w * theta) / jnp.sqrt(365.0)
+
 def supply(self, eps_t):
     """Exogenous net supply S_t; positive = exogenous traders sell. Price-independent."""
-    return SIGMA_S * eps_t * jnp.sqrt(self.dt)
+    return self.sigma_S() * eps_t * jnp.sqrt(self.dt)
 ```
+
+`sigma_S()` reads the scenario bound by `bind_env` (allocation level and $\mathfrak n_3$), so it
+is traced and vmapped per market with no extra argument.
 
 **Clearing:**
 
@@ -613,7 +649,9 @@ $\mathbb P(\text{aggregate short}) \approx 1/\kappa^2$.
    gradient step. The deviator's idiosyncratic noise stays fresh.
 6. **Robustness (optional, for the paper).**
    - $C^{f,j} \times \{0.5, 2\}$ at $\gamma^{\text{ref}}$ and two more scenarios.
-   - $\sigma_S \times \{0.5, 2\}$: sensitivity to the size of the exogenous supply shocks.
+   - $c \in \{0.5\%, 2\%\}$: sensitivity to the size of the exogenous supply shocks.
+   - $\sigma_S$ fixed at $\sigma_S(\gamma^{\text{ref}})$: separates the effect of the allocation from
+     its effect on volatility, if a reviewer asks.
    - A $K$-step schedule, $\sum_{k} w_k \tanh(\alpha_k - \beta_k \cdot)$ with $w_k \ge 0$, $\sum_k w_k = 1$, for any type $j$ where the audit of phase 4 shows a gap.
 
 ## 7. Paper changes this implies
@@ -636,8 +674,9 @@ $\mathbb P(\text{aggregate short}) \approx 1/\kappa^2$.
 
 ## 8. Open choices (decide before phase 2)
 
-- **`SIGMA_S`**: the scale of the exogenous supply shocks. Calibrate to K-ETS daily
-  volumes and price volatility.
+- **`SHOCK_SHARE`** ($c$ = 1%): the yearly size of the exogenous supply shocks relative to
+  the scenario's allocation. Check it against K-ETS daily price volatility (log the
+  realized daily volatility at $T = 365$).
 - **`A_CEIL`**: high enough never to bind. If it binds, it is doing economic work and
   must be reported.
 - **A price-elastic exogenous supply** ($s_1$): deliberately not in this model (§1.2).

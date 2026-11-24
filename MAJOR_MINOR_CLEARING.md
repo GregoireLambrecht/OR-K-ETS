@@ -17,10 +17,12 @@ players, the sampling rules and the full algorithm.
   becomes $N_0$ **major players** (default $N_0 = 1$, the KEPCO group). Types 1
   (private producers) and 3 (financial institutions) stay **minor populations**.
 - **Clearing.** Every participant submits a **demand schedule** (a trade as a function of
-  the price). Exogenous traders supply a **price-elastic** net quantity. The price is the
-  root of aggregate excess demand. The **price floor blocks the price**: when it binds,
-  trades happen at the floor, buyers are served in full and sellers are **rationed**
-  pro rata. The government never trades.
+  the price). Exogenous traders add a **random net supply**, independent of the price,
+  scaled by the scenario's allocation. The price is the root of aggregate excess demand
+  inside the corridor $[A^{\text{floor}}, A^{\text{ceil}}]$. The **price floor blocks the price**: when it
+  binds, trades happen at the floor, buyers are served in full and sellers are
+  **rationed** pro rata (symmetrically at the artificial ceiling, which should never
+  bind). The government never trades.
 - **Minors** are price-takers. They see only public information.
 - **Majors** internalize their effect on the price and on the fill ratio. They also see
   only their own state and public information.
@@ -125,15 +127,20 @@ when orders are submitted; it is revealed by the price. A schedule lets the majo
 condition its trade on the realized price, so it is strictly better than a quantity
 (Klemperer and Meyer, 1989). A quantity is the special case $\beta^{0,m} = 0$.
 
-### 3.3 Exogenous traders: price-elastic net supply
+### 3.3 Exogenous traders: a random net supply
 
 $$
-S_t(a) = \sigma_S(\gamma)\, \varepsilon^{0,2}_t \sqrt{dt} + s_1\,\big(a - A_{\text{ref}}\big), \qquad s_1 > 0,
+S_t = \sigma_S(\gamma)\, \varepsilon^{0,2}_t \sqrt{dt},
 $$
 
-positive when they sell. In rationing they are one more participant, with order
-$-S_t(a)$. $s_1 > 0$ is required: it makes excess demand strictly decreasing even
-when every $\beta^{0,m} = 0$, and it bounds the majors' price impact by $1/s_1$.
+positive when they sell. It does **not** depend on the price. In rationing the exogenous
+traders are one more participant, with order $-S_t$. The shocks have mean zero, so over
+the year they add no allowances on average and the cap stays the total free allocation.
+
+**No price-elastic term.** An earlier version had an extra $s_1 (a - A_{\text{ref}})$, outside
+traders selling more when the price rises. It is removed, as in `MARKET_CLEARING.md`:
+it leaks the cap, and with the proposed value it pinned the price near
+$A_{\text{ref}} = 6.05$. The consequences for the majors' gradient are in §7.
 
 **Scale of the supply shock: proportional to the allowances of the scenario.** The
 shocks are read as coming from the allowances in circulation, so their size scales
@@ -168,27 +175,29 @@ $$
 With $n$ simulated agents per minor type (§5),
 
 $$
-D_t(a) = \underbrace{\sum_{m=1}^{N_0} f^{0,m}_t(a)}_{\text{majors}} + \underbrace{\sum_{j \in \{1,3\}} \mathfrak n_j\, \frac{1}{n} \sum_{i=1}^{n} f^{j,i}_t(a)}_{\text{minors}} - S_t(a) .
+D_t(a) = \underbrace{\sum_{m=1}^{N_0} f^{0,m}_t(a)}_{\text{majors}} + \underbrace{\sum_{j \in \{1,3\}} \mathfrak n_j\, \frac{1}{n} \sum_{i=1}^{n} f^{j,i}_t(a)}_{\text{minors}} - S_t .
 $$
 
-$D_t$ is continuous and strictly decreasing, with slope at most $-s_1$. Its root
-$A^\star_t$ is unique and lies below the explicit bound
+$D_t$ is continuous and nonincreasing in $a$, since every schedule is. The price lives
+in the corridor $[A^{\text{floor}}, A^{\text{ceil}}]$, where $A^{\text{ceil}}$ = `A_CEIL` (e.g. 200 USD) is an
+**artificial ceiling**: K-ETS has none, but a compact corridor guarantees that a price
+exists. It must essentially never bind; log how often it does.
+
+**Selection.** $D_t$ may be flat at zero over an interval (for example when every
+participant is at a clip bound, or the majors' schedules are flat). With
+$a^-_t = \sup\{a : D_t(a) > 0\}$ ($A^{\text{floor}}$ if empty) and $a^+_t = \inf\{a : D_t(a) < 0\}$
+($A^{\text{ceil}}$ if empty), every price in $[a^-_t, a^+_t]$ clears, and
 
 $$
-A^{\text{hi}}_t = A_{\text{ref}} + \frac{N_0\, C^{f,0} + \sum_{j \in \{1,3\}} \mathfrak n_j C^{f,j} + \sigma_S \lvert \varepsilon^{0,2}_t \rvert \sqrt{dt}}{s_1} .
+A_t = \operatorname{clip}\big(A^{\text{pre}}_t,\ a^-_t,\ a^+_t\big).
 $$
 
-### 4.2 Blocking floor and rationing (short-side rule)
+### 4.2 The bounds block the price: rationing (short-side rule)
 
-$$
-A_t = \max\big(A^{\text{floor}},\ A^\star_t\big).
-$$
-
-If $D_t(A^{\text{floor}}) \ge 0$, the floor does not bind: $A_t = A^\star_t$, $\rho_t = 1$, and every
-order is executed in full.
-
-If $D_t(A^{\text{floor}}) < 0$, the floor binds: $A_t = A^{\text{floor}}$. Evaluate every order at the
-floor and split it into buy and sell volumes, majors and exogenous traders included:
+The same formula gives $A_t = A^{\text{floor}}$ when $D_t(A^{\text{floor}}) < 0$ and $A_t = A^{\text{ceil}}$ when
+$D_t(A^{\text{ceil}}) > 0$. There the market does not clear, and the long side is rationed.
+Evaluate every order at $A_t$ and split it into buy and sell volumes, majors and
+exogenous traders included:
 
 $$
 B_t = \sum_m \big(f^{0,m}_t\big)^+ + \sum_{j} \mathfrak n_j\, \frac{1}{n}\sum_i \big(f^{j,i}_t\big)^+ + \big(S_t\big)^-,
@@ -196,18 +205,22 @@ B_t = \sum_m \big(f^{0,m}_t\big)^+ + \sum_{j} \mathfrak n_j\, \frac{1}{n}\sum_i 
 O_t = \sum_m \big(f^{0,m}_t\big)^- + \sum_{j} \mathfrak n_j\, \frac{1}{n}\sum_i \big(f^{j,i}_t\big)^- + \big(S_t\big)^+,
 $$
 
-all at $a = A^{\text{floor}}$. Then $O_t > B_t$, and the fill ratio of sellers is
+all at $a = A_t$.
 
-$$
-\rho_t = \frac{B_t}{O_t} \in [0, 1) .
-$$
+- **Interior:** $B_t = O_t$, every order is executed in full.
+- **Floor binds:** $O_t > B_t$; buyers are served in full, sellers pro rata with the
+  sellers' fill ratio $\rho^-_t = B_t / O_t \in [0, 1)$.
+- **Ceiling binds** (should not happen): $B_t > O_t$; sellers are served in full, buyers
+  pro rata with the buyers' fill ratio $\rho^+_t = O_t / B_t \in [0, 1)$.
+
+A ratio is 1 whenever its side is not rationed.
 
 ### 4.3 Executed trades
 
 For every participant $p$ (minor agent, major, exogenous traders):
 
 $$
-\hat f^{p}_t = \begin{cases} f^{p}_t(A_t) & \text{if } f^{p}_t(A_t) \ge 0, \\ \rho_t\, f^{p}_t(A_t) & \text{if } f^{p}_t(A_t) < 0 . \end{cases}
+\hat f^{p}_t = \begin{cases} \rho^+_t\, f^{p}_t(A_t) & \text{if } f^{p}_t(A_t) \ge 0, \\ \rho^-_t\, f^{p}_t(A_t) & \text{if } f^{p}_t(A_t) < 0 . \end{cases}
 $$
 
 Reward: $-\hat f^{p}_t A_t$. Holdings: $\theta^{p}_{t+1} = \theta^{p}_t + \hat f^{p}_t$.
@@ -222,13 +235,14 @@ with $\hat S_t$ the executed exogenous net supply.
 
 ### 4.4 Blocked volume
 
-$G_t = O_t - B_t \ge 0$ when the floor binds, $0$ otherwise. It satisfies
-$D_t(A_t) + G_t = 0$, $G_t \ge 0$, $G_t (A_t - A^{\text{floor}}) = 0$, and
-$\rho_t = 1 - G_t / O_t$. $G_t$ is **not** a trade: it is the volume of sell orders the floor
-blocks. $A^{\text{floor}} \sum_t G_t$ is what a reserve-backed floor would cost.
+$G_t = O_t - B_t$: it is $\ge 0$ when the floor binds, $\le 0$ when the ceiling binds, and
+$0$ in the interior. It satisfies $D_t(A_t) + G_t = 0$ with
+$G_t \in -N_{[A^{\text{floor}}, A^{\text{ceil}}]}(A_t)$. $G_t$ is **not** a trade: at the floor it is the
+volume of sell orders the floor blocks ($\rho^-_t = 1 - G_t / O_t$), and
+$A^{\text{floor}} \sum_t G_t$ is what a reserve-backed floor would cost.
 
 A flag `floor_mode = "block" | "support"` keeps the alternative where the government
-buys $G_t$ ($\rho_t = 1$), for comparison.
+takes the other side of $G_t$ (both ratios equal to 1), for comparison.
 
 ### 4.5 Timing and arrays
 
@@ -236,8 +250,8 @@ buys $G_t$ ($\rho_t = 1$), for comparison.
 |---|---|---|
 | `A_traj` `(T+1,)` | `[0]` | $A_{\text{ref}}$, the pre-open price (`A0_BASE` = 6.05) |
 | | `[t+1]` | $A_t$, the price of day $t$ |
-| `rho_traj` `(T+1,)` | `[0]` | 1 (unused) |
-| | `[t+1]` | $\rho_t$ |
+| `rho_traj` `(T+1, 2)` | `[0]` | $(1, 1)$ (unused) |
+| | `[t+1]` | $(\rho^-_t, \rho^+_t)$, sellers' and buyers' fill ratios |
 
 State slot `A` at day $t$ holds $A^{\text{pre}}_t$ = `A_traj[t]`. The running mean
 `A_avg` averages `A_traj[1..t+1]`, so $\tilde A_T$ is the statutory average of the year.
@@ -282,7 +296,7 @@ slots are never used, and the jitted functions compile once per solve.
 
 ### 6.1 Minor of type $j$
 
-Price-taker: it treats the paths $(A_t, \rho_t)_t$ as exogenous.
+Price-taker: it treats the paths $(A_t, \rho^-_t, \rho^+_t)_t$ as exogenous.
 
 $$
 V^j(\boldsymbol\pi^j; \Sigma^0, \Sigma, \gamma) = \mathbb E\Big[ \sum_{t=0}^{T-1} \Big( -\hat f^j_t A_t + (P_t \mathbf 1 - c^j) \cdot \xi^j_t \eta^j_t \Big) - \kappa^2 \tilde A_T \big(e^j \cdot \bar\xi^j_T + \bar\varepsilon^j_T - \theta^j_T\big)^+ \Big].
@@ -297,14 +311,14 @@ $$
 V^{0}(\boldsymbol\pi^{0}; \Sigma^0_{-m}, \Sigma, \gamma) = \mathbb E\Big[ \sum_{t=0}^{T-1} \Big( -\hat f^{0,m}_t A_t + (P_t \mathbf 1 - c^0) \cdot \xi^{0,m}_t \eta^{0,m}_t \Big) - \kappa^2 \tilde A_T \big(e^0 \cdot \bar\xi^{0,m}_T + \bar\varepsilon^{0,m}_T - \theta^{0,m}_T\big)^+ \Big],
 $$
 
-where $A_t$, $\rho_t$, $\tilde A_T$ and the minors' states all respond to $\boldsymbol\pi^0$; the
+where $A_t$, $\rho^\pm_t$, $\tilde A_T$ and the minors' states all respond to $\boldsymbol\pi^0$; the
 other majors follow components drawn from $\Sigma^0$; the minors keep their feedback
 schedules (they react through prices and their own states, but do not re-optimize).
 
 Channels of market power the major can learn:
 
 1. **Price impact:** buying raises $A_t$; it shades its trades.
-2. **Fill at the floor:** its executed sale $\rho_t f^{0,m}_t$ grows with its own order and
+2. **Fill at the floor:** its executed sale $\rho^-_t f^{0,m}_t$ grows with its own order and
    crowds the minors out of the limited demand.
 3. **The K-ETS penalty index:** $\tilde A_T$ is an average the major moves; a major that
    will be short gains by depressing it.
@@ -345,20 +359,34 @@ power. $N_0 > 1$: competing generators, each internalizing its own, smaller impa
 The minors' best responses use frozen paths, as today. The majors' best responses
 differentiate through the clearing.
 
-**Interior ($A^\star_t > A^{\text{floor}}$).** Implicit function theorem at the root: for any input
-$x$ of the clearing (the deviating major's $\alpha^{0}_t, \beta^{0}_t$, its state, and, in the
-full gradient, the minors' schedule parameters),
+**Interior ($A^{\text{floor}} < A_t < A^{\text{ceil}}$, $D_t'(A_t) < 0$).** Implicit function theorem at
+the root: for any input $x$ of the clearing (the deviating major's $\alpha^{0}_t, \beta^{0}_t$,
+its state, and, in the full gradient, the minors' schedule parameters),
 
 $$
 \frac{\partial A_t}{\partial x} = -\frac{\partial_x D_t(A_t)}{D_t'(A_t)}, \qquad
-D_t'(A_t) = \sum_m f^{0,m\,\prime}_t(A_t) + \sum_j \mathfrak n_j \tfrac{1}{n}\textstyle\sum_i f^{j,i\,\prime}_t(A_t) - s_1 \le -s_1 .
+D_t'(A_t) = \sum_m f^{0,m\,\prime}_t(A_t) + \sum_j \mathfrak n_j \tfrac{1}{n}\textstyle\sum_i f^{j,i\,\prime}_t(A_t) \le 0 .
 $$
 
 The major's own slope $f^{0,m\,\prime}_t \le 0$ is in the denominator: a steeper schedule
 moves the price less, a flatter one moves it more but cannot react to the shock.
 
+**Flat regions.** With a price-independent supply, nothing bounds $D_t'$ away from 0.
+Where the selection rule keeps $A_t = A^{\text{pre}}_t$ inside a flat interval, small
+changes of the inputs do not move the price: the gradient is 0. Close to a flat
+region, $|D_t'|$ is small and the IFT derivative can be very large; the price can even
+jump as the major's order crosses the flat level. In practice:
+
+- guard the denominator, $D_t' \to \min(D_t', -\epsilon_D)$, with $\epsilon_D$ small relative to
+  $\sum_j \mathfrak n_j C^{f,j} / A_{\text{scale}}$, and clip the major's gradient norm;
+- log how often the guard is active and the size of $\partial A_t / \partial f^0$ (§9).
+
+If these gradients turn out unstable, the remedy is an open choice to discuss (§13),
+not a default: for example a small price-elastic supply centred on the previous price,
+$s_1 (a - A^{\text{pre}}_t)$, with a diagnostic of how much it leaks the cap.
+
 **Floor binds.** $A_t = A^{\text{floor}}$ does not move; the gradient goes through
-$\rho_t = B_t / O_t$, an explicit function of the orders at the floor. For a selling
+$\rho^-_t = B_t / O_t$, an explicit function of the orders at the floor. For a selling
 major,
 
 $$
@@ -370,15 +398,15 @@ increasing and concave in its order. Plain automatic differentiation handles it.
 **Implementation.**
 - Wrap the bisection in `jax.custom_jvp`. In the JVP rule, compute
   `jax.jvp(lambda x: D(A_t, x), (x,), (dx,))` at the fixed $A_t$ and divide by the
-  analytic $D_t'(A_t)$; return 0 when the floor binds. Never differentiate through the
-  bisection iterations.
-- The switch "floor binds or not" is a `jnp.where`: the gradient is piecewise, which
+  analytic, guarded $D_t'(A_t)$; return 0 when a bound binds or the selection rule keeps
+  $A^{\text{pre}}_t$. Never differentiate through the bisection iterations.
+- The switch "bound binds or not" is a `jnp.where`: the gradient is piecewise, which
   is correct.
 
 **Two regimes for the major's gradient.**
 - **Myopic:** `stop_gradient` on the minors' schedule parameters and states (and on
   the other majors'). The gradient goes only through the same-day clearing ($A_t$,
-  $\rho_t$) and through the major's own state. Cost: about one population simulation
+  $\rho^\pm_t$) and through the major's own state. Cost: about one population simulation
   per step, like a minor best response.
 - **Full:** no `stop_gradient`. The gradient also goes through the minors' future
   reactions (their states and their inputs $A^{\text{pre}}$, $H$). Backpropagate through the
@@ -397,24 +425,25 @@ myopic one clearly, switch to full training.
 ```
 Input : majors' schedule parameters (alpha0_m, beta0_m, lo0_m, hi0_m), m = 1..N0
         minors' schedule parameters (alpha_ji, beta_ji, lo_ji, hi_ji), j in {1,3}, i = 1..n
-        weights n_j, supply shock eps_t, floor A_floor, A_pre
-Output: A_t, rho_t, G_t
+        weights n_j, supply S_t = sigma_S(gamma) * eps_t * sqrt(dt), corridor [A_floor, A_ceil], A_pre
+Output: A_t, rho_sell, rho_buy, G_t
 
-1  D(a) = sum_m f0_m(a) + sum_j n_j * mean_i f_ji(a) - S_t(a)          # closed form
-2  if D(A_floor) < 0:                                                   # floor binds
-3      A_t   = A_floor
-4      B_t   = buy volume at A_floor  (majors, minors, exogenous)
-5      O_t   = sell volume at A_floor (majors, minors, exogenous)
-6      rho_t = B_t / O_t ;  G_t = O_t - B_t
-7  else:
-8      A_t   = bisection root of D on [A_floor, A_hi]  (CLEAR_ITERS halvings)
-9      rho_t = 1 ;  G_t = 0
-10 if floor_mode == "support": rho_t = 1                                # government buys G_t
-11 return A_t, rho_t, G_t
+1  D(a) = sum_m f0_m(a) + sum_j n_j * mean_i f_ji(a) - S_t             # closed form, nonincreasing
+2  a_minus = sup{a in corridor : D(a) > 0}   (A_floor if empty)        # bisection, CLEAR_ITERS halvings
+3  a_plus  = inf{a in corridor : D(a) < 0}   (A_ceil  if empty)        # bisection, CLEAR_ITERS halvings
+4  A_t     = clip(A_pre, a_minus, a_plus)                              # selection rule
+5  B_t     = buy volume at A_t   (majors, minors, exogenous)
+6  O_t     = sell volume at A_t  (majors, minors, exogenous)
+7  rho_sell = B_t / O_t if O_t > B_t else 1                            # floor binds
+8  rho_buy  = O_t / B_t if B_t > O_t else 1                            # ceiling binds (should not)
+9  G_t     = O_t - B_t                                                 # ~0 in the interior
+10 if floor_mode == "support": rho_sell = rho_buy = 1                  # government takes G_t
+11 return A_t, rho_sell, rho_buy, G_t
 ```
 
-Steps 1–9 run unconditionally (results selected with `jnp.where`) so the function
-`vmap`s over markets. One network forward pass per participant per day; the rest is
+Use a small relative tolerance in steps 7–8 so rounding in the interior does not
+trigger rationing. All steps run unconditionally (results selected with `jnp.where`)
+so the function `vmap`s over markets. One network forward pass per participant per day; the rest is
 arithmetic.
 
 ### Algorithm 2 — Simulating one market for one year
@@ -428,11 +457,11 @@ Output: A_traj, rho_traj, G_traj, rewards of every participant
 2  draw l^{j,i} = (o^j + floor(i k / n)) mod k for every minor agent           # fixed for the year
 3  for t = 0 .. T-1:
 4      forward pass: majors -> (alpha0, beta0, xi0, eta0); minors -> (alpha, beta, xi, eta) via apply_gathered
-5      (A_t, rho_t, G_t) = Algorithm 1
-6      executed trades f_hat = f(A_t) for buyers, rho_t * f(A_t) for sellers
+5      (A_t, rho_sell, rho_buy, G_t) = Algorithm 1
+6      executed trades f_hat = rho_buy * f(A_t) for buyers, rho_sell * f(A_t) for sellers
 7      rewards  += -f_hat * A_t + production revenue
 8      states   <- dynamics(state, f_hat, xi, eta, idiosyncratic shock, next_A = A_t, next_P = P_{t+1})
-9      update public history H (EMA of price changes, rho_t, volume)
+9      update public history H (EMA of price changes, rho_sell, volume)
 10 rewards -= terminal penalty kappa2 * A_avg_T * shortfall
 ```
 
@@ -506,8 +535,9 @@ for iteration k = 1 .. K:
 | `major_fill_share` | at the floor: share of executed sales captured by the majors vs their share of sell orders |
 | `major_profile` | majors' net trades by month, compared with a price-taking major (same networks, frozen-price best response) |
 | `penalty_index_effect` | $\tilde A_T$ with the strategic major minus with the price-taking major |
-| `A_on_floor`, `rho_mean_on_floor`, `blocked_volume[j]`, `support_cost` | as in `market-clearing` |
-| `clear_residual_max`, `price_drift`, `A0_cleared` | as in `market-clearing` |
+| `A_on_floor`, `A_on_ceil`, `rho_mean_on_floor`, `blocked_volume[j]`, `support_cost` | as in `market-clearing` |
+| `clear_residual_max`, `clear_flat_frac`, `price_drift`, `A0_cleared` | as in `market-clearing` |
+| `ift_guard_frac`, `major_impact_max` | how often the guard on $D_t'$ is active, and the largest $\partial A_t / \partial f^0$ (§7) |
 | `emissions`, `revenue[j]`, `revenue_major` | the outcomes a regulator reads, with and without market power |
 
 ---
@@ -515,14 +545,15 @@ for iteration k = 1 .. K:
 ## 10. Tests
 
 1. **Clearing with majors.** A flat major schedule ($\beta^0 = 0$) shifts $D_t$ by a
-   constant; $A^\star_t$ matches a dense-grid root.
+   constant; $A_t$ matches a dense-grid root, and the selection rule applies on flat
+   regions.
 2. **IFT gradient.** $\partial A_t / \partial \alpha^0$ and $\partial A_t / \partial \beta^0$ from the custom JVP
    match central finite differences on interior days.
 3. **Rationing gradient.** At the floor, $\partial \hat f^0 / \partial \alpha^0$ matches finite differences.
 4. **Conservation** with majors, in both floor modes.
 5. **Major sampling.** Over many markets, each major's component frequency is $1/k$;
    inside a market, each major follows exactly one component.
-6. **Price-taking limit.** With `stop_gradient` on $A_t$ and $\rho_t$ in the major's
+6. **Price-taking limit.** With `stop_gradient` on $A_t$ and $\rho^\pm_t$ in the major's
    rollout, the major's best response equals a frozen-path best response.
 7. **Vanishing mass.** As $m_0 \to 0$, prices converge to those of `market-clearing`
    without type 2.
@@ -543,7 +574,8 @@ for iteration k = 1 .. K:
 ## 12. Paper changes
 
 - §2: type 2 becomes $N_0$ major players; the information structure of §2; the
-  clearing of §4 (schedules, elastic supply, blocking floor with rationing).
+  clearing of §4 (schedules, random supply scaled by the allocation, blocking floor
+  with rationing).
 - Definitions: majors' mixed controls sampled per market; minors' population controls
   sampled per agent; closed-loop Nash (§6.3); exploitabilities with frozen paths for
   minors and re-clearing for majors.
@@ -561,6 +593,9 @@ for iteration k = 1 .. K:
 - **The K-ETS floor:** check it is a hard trading limit (`block`); `support` is the
   alternative.
 - **Calibration** of the shock share $c$ (1% of the scenario's allocation per year, §3.3)
-  and of $s_1$ (market depth, which bounds the majors' price impact).
+  and of `A_CEIL` (high enough never to bind).
+- **Stability of the majors' gradient** without a price-elastic supply (§7): if the guard
+  on $D_t'$ is often active or the gradients are unstable, decide together whether to add
+  a small supply term centred on the previous price, with a cap-leak diagnostic.
 - **Not in this document:** the merit-order electricity price; production stays as in
   `market-clearing` v1.
