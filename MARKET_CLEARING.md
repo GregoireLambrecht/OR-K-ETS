@@ -10,8 +10,8 @@ $$
 
 (`compute_next_A_weighted` in `envs/environment.py`) by a **market-clearing price**.
 At each day $t$, every agent of type $j$ submits a demand schedule, i.e. a trade as a
-function of the price. Exogenous traders supply a price-elastic net quantity, and the
-price is the one at which aggregate trade balances.
+function of the price. Exogenous traders add a random net supply, and the price is
+the one at which aggregate trade balances.
 
 The **price floor blocks the price; the government does not trade.** When the
 clearing price would fall below the floor, trades happen at the floor, buyers are
@@ -70,80 +70,91 @@ clearing cost by the number of bisection iterations.
 Production and the fuel share stay as they are, computed from the pre-trade state
 (v1 choice, see §8).
 
-### 1.2 Exogenous traders: price-elastic net supply
+### 1.2 Exogenous traders: a random net supply
 
 $$
-S_t(a) = \sigma_S\, \varepsilon^{0,2}_t \sqrt{dt} + s_1\,\big(a - A_{\text{ref}}\big), \qquad s_1 > 0 .
+S_t = \sigma_S\, \varepsilon^{0,2}_t \sqrt{dt} .
 $$
 
-$S_t(a)$ is in allowances per unit mass of agents. It is a net supply: positive means
-the exogenous traders sell, negative means they buy. In the rationing step they are
-treated as one more participant, with order $f^{S}_t(a) = -S_t(a)$.
-`eps0` keeps its shape and seeds; only its meaning changes, from a price shock to a
-supply shock. $s_1$ is the market depth: it plays the role the old impact function
-$h$ stood for, and is calibrated to K-ETS volumes.
+$S_t$ is in allowances per unit mass of agents. It is a net supply: positive means the
+exogenous traders sell, negative means they buy. It does **not** depend on the price.
+In the rationing step the exogenous traders are treated as one more participant, with
+order $f^{S}_t = -S_t$. `eps0` keeps its shape and seeds; only its meaning changes,
+from a price shock to a supply shock. The shocks have mean zero, so over the year the
+exogenous traders add no allowances on average, and the cap stays the total free
+allocation.
 
-$s_1 > 0$ is **required**. It makes the excess demand strictly decreasing, so the
-clearing price is unique, there are no flat regions, and no artificial ceiling is
-needed.
+**No price-elastic term.** An earlier version of this document had
+$S_t(a) = \sigma_S \varepsilon^{0,2}_t \sqrt{dt} + s_1 (a - A_{\text{ref}})$. It is removed: outside
+traders who sell whenever the price rises leak the cap, and with the value that was
+proposed ($s_1 \approx 16$) they supplied more than the whole cap over a year and pinned
+the price near $A_{\text{ref}} = 6.05$. Any code with `S1` must drop that term.
 
-### 1.3 Excess demand and the unconstrained clearing price
+### 1.3 Excess demand and the clearing price
 
 With the context weights $w_j$ (`context_weights()`, a function of $\mathfrak n_3$ in $\gamma$)
 and $n$ simulated agents per type, agent $(j,i)$ following its own drawn component
 $l^{j,i}$ of the mixture (§1.8),
 
 $$
-D_t(a) = \sum_{j} w_j \, \frac{1}{n} \sum_{i=1}^{n} f^{j,i}_t(a) \;-\; S_t(a),
+D_t(a) = \sum_{j} w_j \, \frac{1}{n} \sum_{i=1}^{n} f^{j,i}_t(a) \;-\; S_t,
 \qquad f^{j,i}_t \text{ given by the schedule of } \vartheta^{j, l^{j,i}} .
 $$
 
-$D_t$ is continuous and strictly decreasing, with slope at most $-s_1$. The
-unconstrained clearing price $A^\star_t$ is its unique root. A bracket is explicit: since
-every order is at most $C^{f,j}$,
+$D_t$ is continuous and nonincreasing in $a$, since every schedule is. The price lives
+in the corridor $[A^{\text{floor}}, A^{\text{ceil}}]$, where $A^{\text{ceil}}$ = `A_CEIL` is an
+**artificial ceiling**: K-ETS has none, but a compact corridor is what guarantees that
+a price always exists. Set it high enough that it never binds (e.g. 200 USD) and log
+how often it does; it should be about never.
+
+**Selection.** Inside the corridor, $D_t$ may be flat at zero over an interval, for
+example when every agent is at a clip bound. Let
+$a^-_t = \sup\{a \in [A^{\text{floor}}, A^{\text{ceil}}] : D_t(a) > 0\}$ (equal to $A^{\text{floor}}$ if the
+set is empty) and $a^+_t = \inf\{a \in [A^{\text{floor}}, A^{\text{ceil}}] : D_t(a) < 0\}$ (equal to
+$A^{\text{ceil}}$ if the set is empty). By monotonicity every price in $[a^-_t, a^+_t]$ clears
+the market, and we take
 
 $$
-A^\star_t \le A^{\text{hi}}_t \coloneqq A_{\text{ref}} + \frac{\sum_j w_j C^{f,j} + \sigma_S\, \lvert \varepsilon^{0,2}_t \rvert \sqrt{dt}}{s_1} .
+A_t = \operatorname{clip}\big(A^{\text{pre}}_t,\ a^-_t,\ a^+_t\big):
 $$
 
-### 1.4 The price floor blocks the price: rationing (short-side rule)
+the price does not move if the previous one still clears, and otherwise it moves as
+little as possible.
+
+### 1.4 The bounds block the price: rationing (short-side rule)
+
+The same formula covers the bounds: $A_t = A^{\text{floor}}$ when $D_t(A^{\text{floor}}) < 0$, and
+$A_t = A^{\text{ceil}}$ when $D_t(A^{\text{ceil}}) > 0$. In both cases the market does not clear at
+$A_t$, and the long side is rationed. Every order, including the exogenous traders'
+order $-S_t$, is evaluated at $A_t$ and split into buy and sell volumes:
 
 $$
-A_t = \max\big(A^{\text{floor}},\ A^\star_t\big).
-$$
-
-- **The floor does not bind** ($D_t(A^{\text{floor}}) \ge 0$, i.e. $A^\star_t \ge A^{\text{floor}}$):
-  the market clears at $A_t = A^\star_t$ and every order is executed in full.
-- **The floor binds** ($D_t(A^{\text{floor}}) < 0$): trades happen at $A_t = A^{\text{floor}}$.
-  Every order, including the exogenous traders' order $-S_t$, is evaluated at the
-  floor and split into buy and sell volumes:
-
-$$
-B_t = \sum_j w_j\, \text{mean}_{l,i}\big(f^{j,i,l}_t(A^{\text{floor}})\big)^+ + \big(S_t(A^{\text{floor}})\big)^- ,
+B_t = \sum_j w_j\, \text{mean}_{i}\big(f^{j,i}_t(A_t)\big)^+ + \big(S_t\big)^- ,
 \qquad
-O_t = \sum_j w_j\, \text{mean}_{l,i}\big(f^{j,i,l}_t(A^{\text{floor}})\big)^- + \big(S_t(A^{\text{floor}})\big)^+ ,
+O_t = \sum_j w_j\, \text{mean}_{i}\big(f^{j,i}_t(A_t)\big)^- + \big(S_t\big)^+ ,
 $$
 
-  where $\text{mean}_{l,i}$ is the average over the $k\,n_j$ particles of type $j$.
-  Then $O_t > B_t$. Buyers are served in full; sellers are served pro rata, with the
-  **fill ratio**
+where $\text{mean}_{i}$ is the average over the $n$ simulated agents of type $j$.
+
+- **Interior** ($A^{\text{floor}} < A_t < A^{\text{ceil}}$, or a bound where $D_t = 0$): $B_t = O_t$,
+  every order is executed in full.
+- **The floor binds** ($D_t(A^{\text{floor}}) < 0$): $O_t > B_t$. Buyers are served in full;
+  sellers are served pro rata, with the **sellers' fill ratio**
+  $\rho^-_t = B_t / O_t \in [0, 1)$.
+- **The ceiling binds** ($D_t(A^{\text{ceil}}) > 0$, should not happen): $B_t > O_t$. Sellers are
+  served in full; buyers are served pro rata, with the **buyers' fill ratio**
+  $\rho^+_t = O_t / B_t \in [0, 1)$.
+
+Set a ratio to 1 whenever its side is not rationed.
+
+**Executed trade.** The trade that enters the reward and the dynamics of agent $(j,i)$ is
 
 $$
-\rho_t = \frac{B_t}{O_t} \in [0, 1).
+\hat f^{j,i}_t = \begin{cases} \rho^+_t\, f^{j,i}_t(A_t) & \text{if } f^{j,i}_t(A_t) \ge 0 \quad (\text{buyer}),\\[2pt] \rho^-_t\, f^{j,i}_t(A_t) & \text{if } f^{j,i}_t(A_t) < 0 \quad (\text{seller}), \end{cases}
 $$
 
-Set $\rho_t = 1$ when the floor does not bind.
-
-**Executed trade.** The trade that enters the reward and the dynamics of particle
-$(j,i,l)$ is
-
-$$
-\hat f^{j,i,l}_t = \begin{cases} f^{j,i,l}_t(A_t) & \text{if } f^{j,i,l}_t(A_t) \ge 0 \quad (\text{buyer}),\\[2pt] \rho_t\, f^{j,i,l}_t(A_t) & \text{if } f^{j,i,l}_t(A_t) < 0 \quad (\text{seller}), \end{cases}
-$$
-
-with reward $-\hat f^{j,i,l}_t A_t$ and holdings
-$\theta^{j,i,l}_{t+1} = \theta^{j,i,l}_t + \hat f^{j,i,l}_t$. Since $\rho_t = 1$ off the floor,
-one formula covers both cases.
+with reward $-\hat f^{j,i}_t A_t$ and holdings $\theta^{j,i}_{t+1} = \theta^{j,i}_t + \hat f^{j,i}_t$.
+In the interior both ratios are 1, so one formula covers every case.
 
 Pro rata is the mean-field stand-in for the price–time priority of the exchange
 (KRX), with random order arrival.
@@ -153,15 +164,16 @@ Pro rata is the mean-field stand-in for the price–time priority of the exchang
 The price satisfies the complementarity system
 
 $$
-D_t(A_t) + G_t = 0, \qquad G_t \ge 0, \qquad A_t \ge A^{\text{floor}}, \qquad G_t\,\big(A_t - A^{\text{floor}}\big) = 0 ,
+D_t(A_t) + G_t = 0, \qquad G_t \in -N_{[A^{\text{floor}}, A^{\text{ceil}}]}(A_t),
 $$
 
-so $G_t = -D_t(A^{\text{floor}}) = O_t - B_t$ when the floor binds and $0$ otherwise.
-$G_t$ is **not** a trade. It is the volume of sell orders that the floor blocks, and
-$\rho_t = 1 - G_t / O_t$. It has two readings, both reported:
+that is, $G_t = 0$ in the interior, $G_t = O_t - B_t \ge 0$ when the floor binds and
+$G_t = O_t - B_t \le 0$ when the ceiling binds. $G_t$ is **not** a trade. At the floor it
+is the volume of sell orders the floor blocks ($\rho^-_t = 1 - G_t / O_t$); at the ceiling,
+$-G_t$ is the blocked buy orders. At the floor it has two readings, both reported:
 
 1. **Blocked liquidity:** what the participants wanted to sell and could not, in
-   total and by type $j$ (type $j$'s blocked volume is $(1 - \rho_t)$ times its sell
+   total and by type $j$ (type $j$'s blocked volume is $(1 - \rho^-_t)$ times its sell
    orders).
 2. **Cost of a reserve-backed floor:** $G_t$ is what a government would have to buy
    each day to make the floor a clearing price, so $A^{\text{floor}} \sum_t G_t$ is the
@@ -171,15 +183,15 @@ $\rho_t = 1 - G_t / O_t$. It has two readings, both reported:
 
 | `floor_mode` | meaning | executed sale at the floor | conservation |
 |---|---|---|---|
-| `"block"` (default) | trading below the floor is forbidden, sellers are rationed | $\rho_t\, f^{j,i,l}_t$ | $\bar\theta_{t+1} = \bar\theta_t + \hat S_t$ |
-| `"support"` | the government buys the excess $G_t$ at the floor | $f^{j,i,l}_t$ | $\bar\theta_{t+1} = \bar\theta_t + \hat S_t - G_t$ |
+| `"block"` (default) | trading outside the corridor is forbidden, the long side is rationed | $\rho^-_t\, f^{j,i}_t$ | $\bar\theta_{t+1} = \bar\theta_t + \hat S_t$ |
+| `"support"` | the government buys the excess $G_t$ at the floor (and sells $-G_t$ at the ceiling) | $f^{j,i}_t$ | $\bar\theta_{t+1} = \bar\theta_t + \hat S_t - G_t$ |
 
-Here $\bar\theta_t = \sum_j w_j\, \text{mean}_{l,i}\, \theta^{j,i,l}_t$ and $\hat S_t$ is the
-executed exogenous net supply (rationed like any seller in `"block"` mode). Both modes
-share the clearing; only the execution differs. One solve of each gives the
-comparison of a blocking floor against a reserve-backed one. The difference is large
-wherever the floor binds, in particular below the κ switch, where almost everyone
-sells and $\rho_t \approx 0$ in `"block"` mode.
+Here $\bar\theta_t = \sum_j w_j\, \text{mean}_{i}\, \theta^{j,i}_t$ and $\hat S_t$ is the
+executed exogenous net supply (rationed like any participant on the long side in
+`"block"` mode). Both modes share the clearing; only the execution differs. One solve
+of each gives the comparison of a blocking floor against a reserve-backed one. The
+difference is large wherever the floor binds, in particular below the κ switch, where
+almost everyone sells and $\rho^-_t \approx 0$ in `"block"` mode.
 
 ### 1.7 Timing and indexing (keep the current array conventions)
 
@@ -187,8 +199,8 @@ sells and $\rho_t \approx 0$ in `"block"` mode.
 |---|---|---|
 | `A_traj` `(T+1,)` | `[0]` | $A_{\text{ref}}$: the pre-open price, used only as $A^{\text{pre}}_0$. Use `A0_BASE` = 6.05. |
 | | `[t+1]` | $A_t$, the price of step $t$, at which the trades of step $t$ are executed |
-| `rho_traj` `(T+1,)` | `[0]` | $1$ (unused) |
-| | `[t+1]` | $\rho_t$, the fill ratio of sellers at step $t$ |
+| `rho_traj` `(T+1, 2)` | `[0]` | $(1, 1)$ (unused) |
+| | `[t+1]` | $(\rho^-_t, \rho^+_t)$, the fill ratios of sellers and buyers at step $t$ |
 
 Consequences, most of which hold already:
 
@@ -271,11 +283,11 @@ Add:
 
 ```python
 # ── market clearing ──────────────────────────────────────────────────────────
-A_REF        = A0_BASE        # pre-open price A^pre_0, and centre of the elastic supply
+A_REF        = A0_BASE        # pre-open price A^pre_0 (tie-breaker of the selection rule)
+A_CEIL       = 200.0          # artificial ceiling (USD), for existence only; must essentially never bind
 BETA_MIN     = 0.1            # floor on the schedule slope (normalised price units)
-CLEAR_ITERS  = 40             # bisection halvings on [A_floor, A_hi]
+CLEAR_ITERS  = 40             # bisection halvings per side on [A_floor, A_CEIL]
 SIGMA_S      = 0.05 * CAP_F_BASE * MEAN_MARKET_IMPACT   # exogenous supply shock scale, TO CALIBRATE
-S1           = 0.5 * CAP_F_BASE * MEAN_MARKET_IMPACT / A0_BASE  # supply elasticity, > 0, TO CALIBRATE
 FLOOR_MODE   = os.environ.get('KETS_FLOOR_MODE', 'block')        # 'block' | 'support'
 
 # ── population sampling (§1.8) ───────────────────────────────────────────────
@@ -288,14 +300,12 @@ def supply_noise_base(key, T):
     return jax.random.normal(key, (T,))
 ```
 
-`S1` is in allowances per unit mass per dollar. The value above means that a price
-move of one $A_0$ changes the exogenous supply by half an average trading capacity:
-a placeholder, to be calibrated. Read `FLOOR_MODE` once at import, like `FLOOR_MAX`,
-and record it in `progress.json`.
+There is **no** `S1`: the exogenous supply does not depend on the price (§1.2). Read
+`FLOOR_MODE` once at import, like `FLOOR_MAX`, and record it in `progress.json`.
 
 Keep `market_impact_base` and `white_noise_A_base` so `main` still runs, but do not
-use them on this branch. Update the old note "deliberately no ceiling": there is
-still no ceiling, and none is needed, because $s_1 > 0$ guarantees existence.
+use them on this branch. Update the old note "deliberately no ceiling": K-ETS has no
+ceiling, and `A_CEIL` is only an artificial bound that guarantees a price exists.
 
 ### 2.2 `envs/models.py`
 
@@ -351,55 +361,64 @@ def order_at(self, x, alpha, beta, lo, hi, a):
     z = alpha - beta * (a - x[idx['A']]) / self.A_scale
     return jnp.clip(x[idx['cap_f']] * jnp.tanh(z), lo, hi)
 
-def executed(self, f, rho):
-    """Executed trade: buyers in full, sellers scaled by the fill ratio."""
-    return jnp.where(f >= 0.0, f, rho * f)
+def executed(self, f, rho_sell, rho_buy):
+    """Executed trade: each side scaled by its fill ratio (1 when not rationed)."""
+    return jnp.where(f >= 0.0, rho_buy * f, rho_sell * f)
 
-def supply(self, a, eps_t):
-    """Exogenous net supply S_t(a); positive = exogenous traders sell."""
-    return SIGMA_S * eps_t * jnp.sqrt(self.dt) + S1 * (a - A_REF)
+def supply(self, eps_t):
+    """Exogenous net supply S_t; positive = exogenous traders sell. Price-independent."""
+    return SIGMA_S * eps_t * jnp.sqrt(self.dt)
 ```
 
 **Clearing:**
 
 ```python
-def clear(self, orders_fn, eps_t, cap_total):
+def clear(self, orders_fn, eps_t, A_pre):
     """orders_fn(a) -> weighted (buy, sell) order volumes of the agents, summed over types.
-    cap_total = sum_j w_j * C^{f,j}, the largest possible aggregate buy volume.
-    Returns (A_t, rho_t, G_t)."""
+    Returns (A_t, rho_sell, rho_buy, G_t)."""
+    S = self.supply(eps_t)
     def D(a):
         buy, sell = orders_fn(a)
-        return buy - sell - self.supply(a, eps_t)
+        return buy - sell - S
 
-    fl  = self.Afloor
-    hi  = A_REF + (cap_total + SIGMA_S * jnp.abs(eps_t) * jnp.sqrt(self.dt)) / S1
-    d_fl = D(fl)
+    lo_, hi_ = self.Afloor, A_CEIL
+    d_lo, d_hi = D(lo_), D(hi_)
 
-    def bisect(_, lh):                     # invariant D(l) > 0 >= D(h)
+    def left(_, lh):                       # a_minus = sup{a : D(a) > 0}; invariant D(l) > 0 >= D(h)
         l, h = lh; m = 0.5 * (l + h); pos = D(m) > 0
         return jnp.where(pos, m, l), jnp.where(pos, h, m)
-    l, h   = jax.lax.fori_loop(0, CLEAR_ITERS, bisect, (fl, hi))
-    A_star = 0.5 * (l + h)
+    def right(_, lh):                      # a_plus = inf{a : D(a) < 0}; invariant D(l) >= 0 > D(h)
+        l, h = lh; m = 0.5 * (l + h); neg = D(m) < 0
+        return jnp.where(neg, l, m), jnp.where(neg, m, h)
 
-    binds = d_fl < 0
-    A_t   = jnp.where(binds, fl, A_star)
+    a_minus = jnp.where(d_lo <= 0, lo_, jnp.where(d_hi > 0, hi_,
+              jax.lax.fori_loop(0, CLEAR_ITERS, left,  (lo_, hi_))[1]))
+    a_plus  = jnp.where(d_hi >= 0, hi_, jnp.where(d_lo < 0, lo_,
+              jax.lax.fori_loop(0, CLEAR_ITERS, right, (lo_, hi_))[0]))
+    A_t = jnp.clip(A_pre, a_minus, a_plus)
 
-    buy, sell = orders_fn(fl)
-    s_fl = self.supply(fl, eps_t)
-    B = buy  + jnp.maximum(-s_fl, 0.0)     # exogenous traders buying at the floor
-    O = sell + jnp.maximum( s_fl, 0.0)     # exogenous traders selling at the floor
-    rho = jnp.where(binds, B / jnp.maximum(O, 1e-12), 1.0)
-    G   = jnp.where(binds, O - B, 0.0)
-    if FLOOR_MODE == 'support':
-        rho = jnp.ones_like(rho)           # government buys G: sellers are not rationed
-    return A_t, rho, G
+    # rationing of the long side at a bound (the ratios are 1 in the interior)
+    buy, sell = orders_fn(A_t)
+    B = buy  + jnp.maximum(-S, 0.0)        # exogenous traders buying
+    O = sell + jnp.maximum( S, 0.0)        # exogenous traders selling
+    rho_sell = jnp.where(O > B, B / jnp.maximum(O, 1e-12), 1.0)
+    rho_buy  = jnp.where(B > O, O / jnp.maximum(B, 1e-12), 1.0)
+    G = O - B                              # >= 0 at the floor, <= 0 at the ceiling, ~0 inside
+    if FLOOR_MODE == 'support':            # the government takes the other side of G
+        rho_sell = jnp.ones_like(rho_sell); rho_buy = jnp.ones_like(rho_buy)
+    return A_t, rho_sell, rho_buy, G
 ```
+
+In the interior $B_t = O_t$ up to the bisection tolerance, so both ratios are 1 (use a
+small relative tolerance in the comparisons `O > B` and `B > O` to avoid spurious
+rationing from rounding).
 
 `orders_fn(a)` is closed form once $(\alpha, \beta, lo, hi)$ are computed: per type $j$,
 the weighted means over the $n$ simulated agents (or the `(K, n_j)` particles in
-`'block'` mode) of the positive and negative parts of `order_at`. So there is **one** network forward pass per step; the bisection and
-the rationing are pure arithmetic. The bisection is skipped in effect when the floor
-binds (its result is discarded), so it can run unconditionally for `vmap`.
+`'block'` mode) of the positive and negative parts of `order_at`. So there is **one**
+network forward pass per step; the bisections and the rationing are pure arithmetic,
+and they run unconditionally (results selected with `jnp.where`) so the function
+`vmap`s over markets.
 
 **One population step, shared by every rollout.** `ensemble_price_path`,
 `ensemble_trajectory` and `ensemble_diagnostics` currently repeat the same step
@@ -412,19 +431,21 @@ def _population_step(self, stacked, statics, comp, Xs, t_idx, P_traj, eps0, idio
     # 1. one forward pass per type on the pre-trade states
     #    ('agent': apply_gathered(stacked[j], statics[j], comp[j], norm(Xs[j])))
     # 2. schedule_params per particle
-    # 3. A_t, rho_t, G_t = clear(orders_fn, eps0[t_idx], cap_total=sum_j w_j * C^{f,j})
-    # 4. f = order_at(..., A_t);  f_exec = executed(f, rho_t)
+    # 3. A_t, rho_sell, rho_buy, G_t = clear(orders_fn, eps0[t_idx], A_pre)
+    # 4. f = order_at(..., A_t);  f_exec = executed(f, rho_sell, rho_buy)
     # 5. actions = (f_exec, xi, eta)
     # 6. new_Xs = step_dyn(Xs, actions, eps, next_A=A_t, next_P=P_traj[t+1])
-    # returns new_Xs, A_t, rho_t, actions, diag = {G_t, binds, B_t, O_t, D(A_t), R_mean[j]}
+    # returns new_Xs, A_t, (rho_sell, rho_buy), actions,
+    #         diag = {G_t, on_floor, on_ceil, flat = a_plus - a_minus > tol, B_t, O_t, D(A_t), R_mean[j]}
 ```
 
 Then:
 
 - `ensemble_price_path`: scan `_population_step` and return
-  `(A_traj, rho_traj)`, both `(T+1,)` (see §1.7). Add `return_diag=False`; when true,
-  also return per-step `G_t`, the floor flag, `B_t`, `O_t`, the interior residual
-  $D_t(A_t)$ and the mean reservation price by type $j$.
+  `(A_traj, rho_traj)` of shapes `(T+1,)` and `(T+1, 2)` (see §1.7). Add
+  `return_diag=False`; when true, also return per-step `G_t`, the floor and ceiling
+  flags, the flat flag, `B_t`, `O_t`, the interior residual $D_t(A_t)$ and the mean
+  reservation price by type $j$.
 - `ensemble_trajectory`, `ensemble_diagnostics`: same step; rewards use $\hat f$ and $A_t$.
 - `running_reward(x, a, A_exec)`: `trade_revenue = -a[0] * A_exec`, where `a[0]` is
   already the executed trade.
@@ -433,7 +454,7 @@ Then:
   evaluate it at `A_exec = A_traj[t_idx + 1]`, execute it with
   `rho_traj[t_idx + 1]`, then reward and dynamics as before. The deviator is a
   price-taker: it treats both paths as exogenous, and the pathwise gradient flows
-  through $\hat f = \rho_t f$ with $\rho_t$ fixed.
+  through $\hat f = \rho^\pm_t f$ with the ratios fixed.
 - `population_initial_states`: in `'agent'` mode, return one `(N_SIM, 16)` array per
   type; the type counts no longer depend on `financial_inst` (the proportions enter
   only through `context_weights`). Add
@@ -491,29 +512,31 @@ Then:
   $\alpha - \beta(\cdot) < 0$), so the warm start remains necessary.
 - `audit_pmfg.py`: the specialist deviator also receives `rho` with the price path.
 - `helper_plot.py`, `diagnostics.py`: relabel "allowance shock" as "net supply
-  shock"; the price panels plot `A_traj[1:]`; add a panel for $\rho_t$ and $G_t$.
+  shock"; the price panels plot `A_traj[1:]`; add a panel for $\rho^-_t$, $\rho^+_t$ and $G_t$.
 
 ---
 
 ## 3. Tests — `tests/test_clearing.py` (pytest, runs on CPU)
 
-1. **Single schedule.** All particles share $\alpha, \beta$, no clip binds, and
-   $\sigma_S \varepsilon = 0$: $A_t$ solves $\text{order}(a) = s_1 (a - A_{\text{ref}})$. Check against
-   a dense-grid root to `1e-6`.
+1. **Single schedule.** All agents share $\alpha, \beta$, no clip binds, and
+   $\sigma_S \varepsilon = 0$: $A_t = R = A^{\text{pre}} + A_{\text{scale}}\,\alpha/\beta$, to `1e-6`.
 2. **Monotonicity.** For random network outputs, $D_t$ on a grid of 1000 prices is
-   strictly decreasing, with slope at most $-s_1$.
-3. **Bracket.** For random outputs and shocks, $D_t(A^{\text{hi}}_t) < 0$.
-4. **Floor binds, `block`.** Every particle sells at the floor: $A_t = A^{\text{floor}}$,
-   $\rho_t = B_t / O_t < 1$, $G_t = O_t - B_t > 0$, and executed buys equal executed
-   sells, exogenous traders included.
-5. **Floor binds, `support`.** Same inputs: $\rho_t = 1$, sellers are filled in full,
+   nonincreasing.
+3. **Flat region.** Every agent is clipped at its buy cap and $S_t$ equals total demand:
+   $a^-_t < a^+_t$, and $A_t = A^{\text{pre}}$ when $A^{\text{pre}} \in [a^-_t, a^+_t]$.
+4. **Floor binds, `block`.** Every agent sells at the floor: $A_t = A^{\text{floor}}$,
+   $\rho^-_t = B_t / O_t < 1$, $\rho^+_t = 1$, $G_t = O_t - B_t > 0$, and executed buys
+   equal executed sells, exogenous traders included.
+5. **Floor binds, `support`.** Same inputs: $\rho^-_t = 1$, sellers are filled in full,
    and the government's purchases equal $G_t$.
-6. **Floor does not bind.** $\rho_t = 1$, $G_t = 0$, $\lvert D_t(A_t) \rvert <$ `1e-8`.
+6. **Interior.** $\rho^-_t = \rho^+_t = 1$, $G_t \approx 0$, $\lvert D_t(A_t) \rvert <$ `1e-8`.
+6b. **Ceiling binds.** Every agent buys at `A_CEIL`: $A_t$ = `A_CEIL`, $\rho^+_t = O_t / B_t < 1$,
+   $\rho^-_t = 1$, $G_t < 0$.
 7. **Conservation.** Over a full `ensemble_trajectory`:
    `block` gives $\bar\theta_T - \bar\theta_0 = \sum_t \hat S_t$, and
    `support` gives $\bar\theta_T - \bar\theta_0 = \sum_t (\hat S_t - G_t)$, to relative `1e-5`.
-8. **Shapes and jit.** `ensemble_price_path` returns two `(T+1,)` arrays,
-   `A_traj[0] == A_REF`, `rho_traj[0] == 1`; `make_price_fn_r3` and
+8. **Shapes and jit.** `ensemble_price_path` returns arrays of shapes `(T+1,)` and
+   `(T+1, 2)`, `A_traj[0] == A_REF`, `rho_traj[0] == (1, 1)`; `make_price_fn_r3` and
    `make_br_stage_fn_r3` compile under `vmap` at `T=10`.
 9. **Deviator consistency.** A deviator holding the same parameters as a
    single-component mixture gets the same return as that component's particles,
@@ -541,7 +564,7 @@ Accept when:
 
 **Sampling check (once, for the paper).** Run the same short configuration with
 `KETS_POP_SAMPLING=block` and `KETS_POP_SAMPLING=agent` (e.g. $T = 50$, $K = 10$,
-one seed, `N_SIM` ≥ 10). The price paths, the fill ratios $\rho_t$ and the
+one seed, `N_SIM` ≥ 10). The price paths, the fill ratios $\rho^\pm_t$ and the
 exploitability per type $j$ should agree within the seed-to-seed noise. Report it in
 one sentence and an appendix figure. Also record the time per FP iteration in both
 modes: constant in `'agent'` mode, growing with $k$ in `'block'` mode.
@@ -551,8 +574,11 @@ modes: constant in `'agent'` mode, growing with $k$ in `'block'` mode.
 | key | meaning | expected |
 |---|---|---|
 | `A_on_floor` | fraction of steps where the floor binds | high below the κ switch |
-| `rho_mean_on_floor`, `rho_min` | fill ratio of sellers when the floor binds | ≈ 0 below the κ switch in `block` mode |
-| `blocked_volume`, `blocked_volume[j]` | $\sum_t G_t$, and type $j$'s share $(1 - \rho_t) \times$ its sell orders | 0 in the interior |
+| `A_on_ceil` | fraction of steps where the artificial ceiling binds | ≈ 0; if not, `A_CEIL` is doing economic work |
+| `clear_flat_frac` | fraction of steps with $a^-_t < a^+_t$ (selection rule used) | small |
+| `rho_mean_on_floor`, `rho_min` | fill ratio $\rho^-_t$ of sellers when the floor binds | ≈ 0 below the κ switch in `block` mode |
+| `blocked_volume`, `blocked_volume[j]` | $\sum_t G_t$ at the floor, and type $j$'s share $(1 - \rho^-_t) \times$ its sell orders | 0 in the interior |
+| `exogenous_net_supply` | $\sum_t \hat S_t$ divided by the total free allocation | ≈ 0 (mean-zero shocks) |
 | `support_cost` | $A^{\text{floor}} \sum_t G_t$, the budget a reserve-backed floor would need | |
 | `clear_residual_max` | max interior $\lvert D_t(A_t) \rvert$, relative to $\sum_j w_j C^{f,j}$ | < 1e-6 |
 | `price_drift` | mean and std of $A_{t+1} - A_t$ off the floor | ≈ 0 (near-martingale), except from the $C^{f,j}$ caps |
@@ -587,19 +613,19 @@ $\mathbb P(\text{aggregate short}) \approx 1/\kappa^2$.
    gradient step. The deviator's idiosyncratic noise stays fresh.
 6. **Robustness (optional, for the paper).**
    - $C^{f,j} \times \{0.5, 2\}$ at $\gamma^{\text{ref}}$ and two more scenarios.
-   - $s_1 \times \{0.5, 2\}$: sensitivity to market depth.
+   - $\sigma_S \times \{0.5, 2\}$: sensitivity to the size of the exogenous supply shocks.
    - A $K$-step schedule, $\sum_{k} w_k \tanh(\alpha_k - \beta_k \cdot)$ with $w_k \ge 0$, $\sum_k w_k = 1$, for any type $j$ where the audit of phase 4 shows a gap.
 
 ## 7. Paper changes this implies
 
 - §2.1: eq. (price_dyn) and the impact function $h$ are replaced by the clearing of
-  §1.3 and the floor rule of §1.4; the noise $\varepsilon^{0,2}$ becomes a supply shock of
-  price-elastic exogenous traders; $A_0$ is endogenous; there is no government trade.
+  §1.3 and the floor rule of §1.4; the noise $\varepsilon^{0,2}$ becomes a mean-zero supply
+  shock of exogenous traders; $A_0$ is endogenous; there is no government trade.
 - Definition of a control: the trade component is a demand schedule (§1.1), and the
   executed trade is $\hat f$.
 - §3: the particle step (particle_h) becomes the clearing step, which returns the
-  price and the fill ratio. FP and the best responses are unchanged; the deviating
-  agent faces frozen $(A_t, \rho_t)$.
+  price and the fill ratios. FP and the best responses are unchanged; the deviating
+  agent faces frozen $(A_t, \rho^-_t, \rho^+_t)$.
 - §3, simulating the population: replace eq. (particle_h), which averages all $k$
   components with $N_j$ particles each, by the per-agent scheme of §1.8, presented as
   the Monte Carlo of the definition of a population control. State the complexity:
@@ -610,15 +636,19 @@ $\mathbb P(\text{aggregate short}) \approx 1/\kappa^2$.
 
 ## 8. Open choices (decide before phase 2)
 
-- **`SIGMA_S` and `S1`**: the supply-shock scale and the market depth. Calibrate to
-  K-ETS daily volumes and price volatility; they set the liquidity the old $h$ stood for.
+- **`SIGMA_S`**: the scale of the exogenous supply shocks. Calibrate to K-ETS daily
+  volumes and price volatility.
+- **`A_CEIL`**: high enough never to bind. If it binds, it is doing economic work and
+  must be reported.
+- **A price-elastic exogenous supply** ($s_1$): deliberately not in this model (§1.2).
+  Any such term must be discussed first, with a diagnostic of how much it leaks the cap.
 - **The floor in K-ETS**: check that it is a hard trading limit (orders below it
   rejected). `block` assumes that; `support` is the reserve-backed alternative.
 - **Production**: v1 decides $\xi, \eta$ from the pre-trade state (one forward pass).
   v2 would feed the price $A_t$ to the production heads (a second, cheap forward pass
   after clearing). The trade head must stay price-free either way.
-- **`A_REF`**: 6.05 (the observed price), used as the pre-open value and as the centre
-  of the elastic supply.
+- **`A_REF`**: 6.05 (the observed price), used only as the pre-open value and
+  tie-breaker of the selection rule.
 - **Not in this document**: the major–minor formulation (paper type 2 as one large
   agent submitting its own schedule) and the merit-order electricity price. Both
   build on this clearing step; write them up separately once it works.
