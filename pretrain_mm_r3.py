@@ -44,7 +44,7 @@ MM = 2
 SEQ_BLUE = ["#86b6ef", "#3987e5", "#1c5cab", "#0d366b"]   # ordinal ramp
 
 ap = argparse.ArgumentParser()
-ap.add_argument('--out',       type=str,   default='mm_warmstart_r3')
+ap.add_argument('--out',       type=str,   default='mm_warmstart_mc_r3')
 ap.add_argument('--steps',     type=int,   default=6000)
 ap.add_argument('--batch',     type=int,   default=4096)
 ap.add_argument('--lr',        type=float, default=1e-3)
@@ -87,7 +87,7 @@ env_ctx = ExogenousMarketEnvJAX(
     kappa=GAMMA_REF[1], T=args.T,
     generate_P_func=generate_prices_ou, A0=A0_BASE, P0=P0,
     market_impact_func=market_impact_base,
-    generate_eps0_func=white_noise_A_base,
+    generate_eps0_func=supply_noise_base,
     generate_eps_idiosyncratic_func=idiosyncratic_noise_base,
     A_scale=A_SCALE_BASE, P_scale=P_SCALE_BASE, agent_per_policy=100,
 )
@@ -102,8 +102,11 @@ st  = opt.init(params)
 def loss_fn(p, key):
     S, gam, Y = sample_batch(key, args.batch, args.buy_frac, args.theta_max, env_ctx)
     net = eqx.combine(p, static).net
-    pred = jax.vmap(lambda s, g: net(s, norm_gamma(g)))(S, gam)[:, 0]
-    return jnp.mean((pred - Y) ** 2)
+    # market clearing: at an unchanged price the centred schedule trades
+    # cap_f * tanh(alpha); fit that, and pull beta weakly towards 1
+    out = jax.vmap(lambda s, g: net(s, norm_gamma(g)))(S, gam)
+    return (jnp.mean((jnp.tanh(out[:, 0]) - Y) ** 2)
+            + 1e-2 * jnp.mean((out[:, 1] - 1.0) ** 2))
 
 
 @jax.jit
@@ -143,7 +146,7 @@ env = ExogenousMarketEnvJAX(
     kappa=GAMMA_REF[1], T=args.T,
     generate_P_func=generate_prices_ou, A0=A0_BASE, P0=P0,
     market_impact_func=market_impact_base,
-    generate_eps0_func=white_noise_A_base,
+    generate_eps0_func=supply_noise_base,
     generate_eps_idiosyncratic_func=idiosyncratic_noise_base,
     A_scale=A_SCALE_BASE, P_scale=P_SCALE_BASE, agent_per_policy=100,
 )
@@ -240,7 +243,7 @@ for c, th in zip(SEQ_BLUE, [0.05, 0.15, 0.30, 0.45]):
                    jnp.full(200, 3.0)], axis=1)
     for (name, g), ls in zip([SCEN[0], SCEN[2]], ['-', (0, (2, 2))]):
         ga = jnp.asarray(g, dtype=jnp.float32)
-        pred = np.asarray(jax.vmap(bind_policy(model, ga))(S))[:, 0]
+        pred = np.tanh(np.asarray(jax.vmap(bind_policy(model, ga))(S))[:, 0])
         ax.plot(grid_t, pred, color=c, lw=LW_MIX if ls == '-' else 1.2, ls=ls)
     tgt = np.asarray(target_hat_f(jnp.asarray(grid_t), jnp.full(200, th),
                                   args.buy_frac))

@@ -55,7 +55,7 @@ from matplotlib.patches import Patch
 
 # ── design tokens ────────────────────────────────────────────────────────────
 TYPE_COLORS = ["#2a78d6", "#eb6834", "#1baf7a"]     # blue, orange, aqua
-TYPE_NAMES  = ["Private producer", "Large public producer", "Market maker"]
+TYPE_NAMES  = ["Private producer", "Large public producer", "Financial institution"]
 
 INK       = "#0b0b0b"
 INK_2     = "#52514e"

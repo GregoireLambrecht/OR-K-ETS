@@ -47,8 +47,10 @@ p.add_argument('--iters',  type=str, default='8000')
 p.add_argument('--lr',     type=str, default='0.001')
 p.add_argument('--lr-schedule', type=str, default=None, choices=['cosine'])
 p.add_argument('--lr-min',      type=float, default=None)
+p.add_argument('--br-restarts', type=int, default=1,
+               help='independent fresh BRs per type per FP iteration; best kept by train loss')
 p.add_argument('--mm-warmstart', type=str,
-               default='mm_warmstart_r3/mm_policy.eqx',
+               default='mm_warmstart_mc_r3/mm_policy.eqx',
                help='saved FiLM market-maker warm start; "" disables it')
 args = p.parse_args()
 
@@ -71,7 +73,7 @@ env = ExogenousMarketEnvJAX(
     kappa=GAMMA_REF[1], T=T_GRID[-1],
     generate_P_func=generate_prices_ou, A0=A0_BASE, P0=P0,
     market_impact_func=market_impact_base,
-    generate_eps0_func=white_noise_A_base,
+    generate_eps0_func=supply_noise_base,      # net supply (market clearing)
     generate_eps_idiosyncratic_func=idiosyncratic_noise_base,
     A_scale=A_SCALE_BASE, P_scale=P_SCALE_BASE,
     agent_per_policy=args.agents,
@@ -110,7 +112,7 @@ history, records = fictitious_play_rung3(
     env, K=args.nb_policy, T_grid=T_GRID, iters=ITERS, lrs=LRS,
     B=args.batch, S=args.verify_samples, S_fixed=args.fixed_samples,
     M=args.eval_samples, eval_chunk=args.eval_chunk,
-    lr_schedule=args.lr_schedule, lr_min=args.lr_min,
+    lr_schedule=args.lr_schedule, lr_min=args.lr_min, br_restarts=args.br_restarts,
     mm_warmstart=(args.mm_warmstart or None),
     key=jax.random.PRNGKey(args.seed),
     save_dir=save_dir, plot_dir=plot_dir,

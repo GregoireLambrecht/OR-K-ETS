@@ -176,13 +176,15 @@ def main():
                     help='which per-seed cache to aggregate (common-noise draws)')
     ap.add_argument('--variants', nargs='+', default=['std', 'nci'],
                     choices=['mean', 'std', 'nstd', 'nci'])
+    ap.add_argument('--outdir', default=os.path.join('figs_audit', 'all_seeds',
+                                                     'sensibility_analysis'))
     args = ap.parse_args()
     args.variants = [None if v == 'mean' else v for v in args.variants]
     VIEW.update(elev=args.elev, azim=args.azim, azim_market=args.azim_market)
 
     d = load_seeds(args.study, args.x, args.y, args.samples)
     name = os.path.basename(args.study.rstrip('/')).replace('results_', '')
-    base = os.path.join('figs_audit', 'all_seeds', 'sensibility_analysis',
+    base = os.path.join(args.outdir,
                         f'{args.x}_{args.y}',
                         f'{args.x}_{args.y}_{name}' + (f'_s{args.samples}' if args.samples > 1 else ''))
     # only the variants the paper uses; the old combined files are left as is

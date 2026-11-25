@@ -224,11 +224,13 @@ class ExogenousMarketEnvJAX(eqx.Module):
     # ── reward and dynamics ──────────────────────────────────────────────────
 
     @staticmethod
-    def running_reward(x, a):
+    def running_reward(x, a, A_exec):
+        """A_exec: the price CLEARED at this step (A_traj[t+1]), at which the
+        trade is executed — not the pre-trade price x[5]."""
         prod_coef     = x[6] - x[10:12]                       # P - (cf, cg)
         quantities    = a[1] * jnp.array([a[2], 1.0 - a[2]])  # xi * (eta, 1-eta)
         prod_revenue  = jnp.dot(quantities, prod_coef)
-        trade_revenue = -a[0] * x[5]                          # -f * A
+        trade_revenue = -a[0] * A_exec                        # -f * A_t
         return prod_revenue + trade_revenue
 
     def terminal_reward(self, x):
@@ -249,7 +251,9 @@ class ExogenousMarketEnvJAX(eqx.Module):
         return jnp.maximum(jnp.maximum(prod, trade), 1.0)
 
     def compute_next_A_weighted(self, A_t, mean_f, eps0_t):
-        """compute_next_A given the population's already-weighted mean trade.
+        """LEGACY (main branch price impact; not called under market clearing).
+
+        compute_next_A given the population's already-weighted mean trade.
 
         Identical in value to compute_next_A when mean_f is the mean of the same
         trades: h is linear, so h(mean) == mean(h), and this evaluates it once
@@ -264,8 +268,9 @@ class ExogenousMarketEnvJAX(eqx.Module):
         )
 
     def compute_next_A(self, A_t, array_f, eps0_t):
-        """Allowance price. h is linear, so the mean impact is h(mean trade).
-        Floor only — there is deliberately no ceiling (plan.md §2.1)."""
+        """LEGACY (not called under market clearing). Allowance price, h linear.
+        Floor only. Under clearing the corridor has an artificial ceiling A_CEIL,
+        needed for existence of a clearing price only."""
         individual_impacts = vmap(self.market_impact)(array_f)
         mean_impact        = jnp.mean(individual_impacts)
         return jnp.maximum(
@@ -340,67 +345,229 @@ class ExogenousMarketEnvJAX(eqx.Module):
 
         return jnp.stack([a0, a1, eta])
 
-    # ── rollouts ─────────────────────────────────────────────────────────────
+    # ── market clearing (MARKET_CLEARING.md §1) ─────────────────────────────
 
-    def ensemble_price_path(self, stacked, statics, P_traj, eps0, idio_pop):
-        """Aggregate allowance price under the FP mixture.
+    def schedule_params(self, x, out):
+        """(16,) pre-trade state, (4,) net output -> (alpha, beta, lo, hi, xi, eta).
+        lo/hi are the pre-trade clip bounds; xi/eta are unnormalised."""
+        idx   = self.dic_indexes
+        cap_f = x[idx['cap_f']]
+        theta = x[idx['theta']]
+        lo, hi = -jnp.minimum(theta, cap_f), cap_f
+        xi  = out[2] * x[idx['cap_xi']]
+        eta = jnp.where(x[idx['tech']] >= 0.0, x[idx['tech']], out[3])
+        return out[0], out[1], lo, hi, xi, eta
+
+    def trade_at(self, x, alpha, beta, lo, hi, a):
+        """f(a) for one particle; continuous and nonincreasing in a."""
+        idx = self.dic_indexes
+        z = alpha - beta * (a - x[idx['A']]) / self.A_scale
+        return jnp.clip(x[idx['cap_f']] * jnp.tanh(z), lo, hi)
+
+    def act_at(self, x, out, a):
+        """Action (f(a), xi, eta) of one particle at price a."""
+        alpha, beta, lo, hi, xi, eta = self.schedule_params(x, out)
+        return jnp.stack([self.trade_at(x, alpha, beta, lo, hi, a), xi, eta])
+
+    def reservation_price(self, x, out):
+        """R = A_pre + A_scale * alpha / beta: the price at which f = 0."""
+        return x[self.dic_indexes['A']] + self.A_scale * out[0] / out[1]
+
+    def clear_price(self, D, A_pre):
+        """D: scalar a -> excess demand, nonincreasing.
+        Returns (A_t, a_minus, a_plus); the solution set is [a_minus, a_plus] and
+        A_t = clip(A_pre, a_minus, a_plus) moves the price as little as possible.
+        Two fixed-length bisections (jit / vmap safe)."""
+        lo_ = jnp.asarray(self.Afloor, jnp.float32)
+        hi_ = jnp.asarray(A_CEIL, jnp.float32)
+
+        def left(_, lh):    # a_minus = sup{a : D(a) > 0}; D(l) > 0 >= D(h)
+            l, h = lh
+            m = 0.5 * (l + h)
+            pos = D(m) > 0
+            return jnp.where(pos, m, l), jnp.where(pos, h, m)
+
+        def right(_, lh):   # a_plus = inf{a : D(a) < 0}; D(l) >= 0 > D(h)
+            l, h = lh
+            m = 0.5 * (l + h)
+            neg = D(m) < 0
+            return jnp.where(neg, l, m), jnp.where(neg, m, h)
+
+        d_lo, d_hi = D(lo_), D(hi_)
+        a_minus = jnp.where(d_lo <= 0, lo_, jnp.where(
+            d_hi > 0, hi_, jax.lax.fori_loop(0, CLEAR_ITERS, left, (lo_, hi_))[1]))
+        a_plus = jnp.where(d_hi >= 0, hi_, jnp.where(
+            d_lo < 0, lo_, jax.lax.fori_loop(0, CLEAR_ITERS, right, (lo_, hi_))[0]))
+        return jnp.clip(A_pre, a_minus, a_plus), a_minus, a_plus
+
+    def excess_demand(self, Xs, outs, S_t, w):
+        """D(a) = sum_j w_j mean_{l,i} f^{j,i,l}(a) - S_t, closed form in a.
+        Xs, outs: per type (K, n_j, 16) states and (K, n_j, 4) net outputs.
+        Returns (D, schedule params per type)."""
+        sp2 = vmap(vmap(self.schedule_params))
+        tr2 = vmap(vmap(self.trade_at, in_axes=(0, 0, 0, 0, 0, None)),
+                   in_axes=(0, 0, 0, 0, 0, None))
+        sps = [sp2(Xs[j], outs[j]) for j in range(N_TYPES)]
+
+        def D(a):
+            tot = 0.0
+            for j in range(N_TYPES):
+                al, be, lo, hi, _, _ = sps[j]
+                tot = tot + w[j] * jnp.mean(tr2(Xs[j], al, be, lo, hi, a))
+            return tot - S_t
+        return D, sps
+
+    def _population_step(self, stacked, statics, Xs, t_idx, P_traj, eps0,
+                         idio_pop, w):
+        """ONE clearing step of the simulated population. Shared by every
+        ensemble rollout so they cannot drift apart.
+
+        Returns new_Xs, A_t, actions (per type (K, n_j, 3)), diag (dict)."""
+        idx = self.dic_indexes
+        K   = Xs[0].shape[0]
+        norm2 = vmap(vmap(self.normalize_state))
+        tr2   = vmap(vmap(self.trade_at, in_axes=(0, 0, 0, 0, 0, None)),
+                     in_axes=(0, 0, 0, 0, 0, None))
+        rp2   = vmap(vmap(self.reservation_price))
+        step_dyn = vmap(
+            vmap(self.single_step_dynamics, in_axes=(0, 0, 0, None, None)),
+            in_axes=(0, 0, 0, None, None))
+
+        # 1-2. one forward pass per type on the pre-trade states
+        outs = [apply_stacked(stacked[j], statics[j], norm2(Xs[j]))
+                for j in range(N_TYPES)]
+
+        # 3. aggregate excess demand, closed form in a
+        S_t = SIGMA_S * eps0[t_idx] * jnp.sqrt(self.dt)
+        D, sps = self.excess_demand(Xs, outs, S_t, w)
+
+        # 4. clear
+        A_pre = Xs[0][0, 0, idx['A']]
+        A_t, a_minus, a_plus = self.clear_price(D, A_pre)
+
+        # 5. execute at A_t
+        actions = []
+        for j in range(N_TYPES):
+            al, be, lo, hi, xi, eta = sps[j]
+            f = tr2(Xs[j], al, be, lo, hi, A_t)
+            actions.append(jnp.stack([f, xi, eta], axis=-1))
+
+        # 6. dynamics
+        new_Xs = []
+        for j in range(N_TYPES):
+            eps_j = jnp.broadcast_to(idio_pop[j][:, t_idx], (K, self.type_counts[j]))
+            new_Xs.append(step_dyn(Xs[j], actions[j], eps_j, A_t, P_traj[t_idx + 1]))
+
+        # diagnostics. G = government purchases (>0 at the floor, <0 at the
+        # ceiling); resid = violation of D(A_t) in N_[floor, ceil](A_t),
+        # i.e. |D| inside, max(D, 0) on the floor, max(-D, 0) on the ceiling.
+        D_t      = D(A_t)
+        on_floor = A_t <= self.Afloor + CLEAR_TOL
+        on_ceil  = A_t >= A_CEIL - CLEAR_TOL
+        G = jnp.where(on_floor, jnp.maximum(-D_t, 0.0),
+                      jnp.where(on_ceil, jnp.minimum(-D_t, 0.0), 0.0))
+        resid = jnp.where(on_floor, jnp.maximum(D_t, 0.0),
+                          jnp.where(on_ceil, jnp.maximum(-D_t, 0.0), jnp.abs(D_t)))
+        # conservation, from the states themselves: d theta_bar = S - G
+        dth = sum(w[j] * jnp.mean(new_Xs[j][..., idx['theta']] - Xs[j][..., idx['theta']])
+                  for j in range(N_TYPES))
+        diag = {
+            'D': D_t, 'S': S_t, 'G': G, 'resid': resid,
+            'on_floor': on_floor, 'on_ceil': on_ceil,
+            'flat': (a_plus - a_minus) > CLEAR_TOL,
+            'a_minus': a_minus, 'a_plus': a_plus,
+            'cons_err': dth - (S_t - G),
+            'R_mean': jnp.stack([jnp.mean(rp2(Xs[j], outs[j])) for j in range(N_TYPES)]),
+            'R_median': jnp.stack([jnp.median(rp2(Xs[j], outs[j])) for j in range(N_TYPES)]),
+            'beta_mean': jnp.stack([jnp.mean(outs[j][..., 1]) for j in range(N_TYPES)]),
+            'beta_std': jnp.stack([jnp.std(outs[j][..., 1]) for j in range(N_TYPES)]),
+            'f_mean': jnp.stack([jnp.mean(actions[j][..., 0]) for j in range(N_TYPES)]),
+        }
+        return tuple(new_Xs), A_t, actions, diag
+
+    def terminal_gaps(self, Xs):
+        """Per type: mean E_T - theta_T and the fraction of particles short."""
+        idx = self.dic_indexes
+        gaps, short = [], []
+        for j in range(N_TYPES):
+            X = Xs[j]
+            g = (jnp.sum(X[..., idx['xi']] * X[..., idx['e']], axis=-1)
+                 + X[..., idx['eps']] - X[..., idx['theta']])
+            gaps.append(jnp.mean(g))
+            short.append(jnp.mean(g > 0))
+        return {'gap_T_type': jnp.stack(gaps), 'short_T_type': jnp.stack(short)}
+
+    def aggregate_gap(self, Xs, w):
+        """Weighted mean of E - theta over the population: > 0 = market short."""
+        idx = self.dic_indexes
+        g = 0.0
+        for j in range(N_TYPES):
+            X = Xs[j]
+            E = jnp.sum(X[..., idx['xi']] * X[..., idx['e']], axis=-1) + X[..., idx['eps']]
+            g = g + w[j] * jnp.mean(E - X[..., idx['theta']])
+        return g
+
+    # ── rollouts ─────────────────────────────────────────────────────────────
+    # A_traj (T+1,): A_traj[0] = A_REF (pre-open), A_traj[t+1] = price CLEARED
+    # at step t, at which the trades of step t are executed.
+
+    def _scan_population(self, stacked, statics, P_traj, eps0, idio_pop):
+        """Runs _population_step over the horizon -> (X_final, A (T,), actions
+        per step, diag per step)."""
+        T_int = int(self.T)
+        K     = jax.tree_util.tree_leaves(stacked[0])[0].shape[0]
+        X0    = self.population_initial_states(K)
+        w     = self.context_weights()
+
+        def step_fn(Xs, t_idx):
+            new_Xs, A_t, actions, diag = self._population_step(
+                stacked, statics, Xs, t_idx, P_traj, eps0, idio_pop, w)
+            return new_Xs, (A_t, actions, diag, Xs)
+
+        Xf, (A, actions, diag, Xs_hist) = jax.lax.scan(step_fn, X0, jnp.arange(T_int))
+        return Xf, A, actions, diag, Xs_hist, w
+
+    def ensemble_price_path(self, stacked, statics, P_traj, eps0, idio_pop,
+                            return_diag=False):
+        """Cleared allowance price under the FP mixture.
 
         stacked / statics : per-type stacked parameters, leading dim K
         P_traj            : (T+1,)  frozen good-price path
-        eps0              : (T,)    frozen allowance shock
-        idio_pop          : tuple of (n_j, T), reused by every block (so blocks
-                            share common random numbers and the aggregate is a
-                            deterministic function of the policies)
+        eps0              : (T,)    frozen net-supply draws (standard normal)
+        idio_pop          : tuple of (n_j, T), reused by every block
 
-        Returns A_traj of shape (T+1,).
+        Returns A_traj (T+1,), [A_REF, A_0, ..., A_{T-1}]; with return_diag,
+        also a dict of per-step clearing diagnostics (each (T,) or (T, 3)) and
+        the final aggregate gap (scalar).
         """
         T_int = int(self.T)
         K     = jax.tree_util.tree_leaves(stacked[0])[0].shape[0]
         X0    = self.population_initial_states(K)
         w     = self.context_weights()
 
-        step_dyn = vmap(
-            vmap(self.single_step_dynamics, in_axes=(0, 0, 0, None, None)),
-            in_axes=(0, 0, 0, None, None),
-        )
-        norm2 = vmap(vmap(self.normalize_state))
-        unnorm2 = vmap(vmap(self.unnormalize_action))
+        def step_fn(Xs, t_idx):
+            new_Xs, A_t, _, diag = self._population_step(
+                stacked, statics, Xs, t_idx, P_traj, eps0, idio_pop, w)
+            return new_Xs, ((A_t, diag) if return_diag else A_t)
 
-        def step_fn(carry, t_idx):
-            Xs, A_t = carry
-
-            actions = []
-            for j in range(N_TYPES):
-                a_hat = apply_stacked(stacked[j], statics[j], norm2(Xs[j]))
-                actions.append(unnorm2(Xs[j], a_hat))
-
-            # Weighted by the CONTEXT proportions, not by the simulated counts:
-            # each type contributes its own mean trade with weight w_j. At the
-            # constructor proportion this is identical to the flat mean over
-            # every simulated agent, since w_j = n_j / N there.
-            per_type = jnp.stack([jnp.mean(a[..., 0]) for a in actions])
-            A_next = self.compute_next_A_weighted(A_t, jnp.sum(w * per_type),
-                                                  eps0[t_idx])
-            P_next = P_traj[t_idx + 1]
-
-            new_Xs = []
-            for j in range(N_TYPES):
-                eps_j = jnp.broadcast_to(idio_pop[j][:, t_idx],
-                                         (K, self.type_counts[j]))
-                new_Xs.append(step_dyn(Xs[j], actions[j], eps_j, A_next, P_next))
-
-            return (tuple(new_Xs), A_next), A_next
-
-        (_, _), A_traj = jax.lax.scan(step_fn, (X0, self.A0), jnp.arange(T_int))
-        return jnp.concatenate([jnp.atleast_1d(self.A0), A_traj])
+        Xf, ys = jax.lax.scan(step_fn, X0, jnp.arange(T_int))
+        A_ref = jnp.atleast_1d(jnp.float32(A_REF))
+        if not return_diag:
+            return jnp.concatenate([A_ref, ys])
+        A, diag = ys
+        diag = dict(diag, agg_gap_T=self.aggregate_gap(Xf, w),
+                    **self.terminal_gaps(Xf))
+        return jnp.concatenate([A_ref, A]), diag
 
     def rollout_agent_batch(self, policy, j, A_traj, P_traj, idio):
-        """A batch of type-j agents responding to a frozen price path.
+        """A batch of type-j agents responding to a frozen cleared price path.
 
-        This is the *only* rollout used for both best-response training and the
-        exploitability metric, so the two are computed on identical footing.
+        The agent's schedule is evaluated at the execution price A_traj[t+1]
+        (it is a price taker: it does not move the clearing). This is the only
+        rollout used for both best-response training and the exploitability
+        metric.
 
-        policy : a TypePolicyNN (or any callable (8,) -> (3,))
+        policy : a TypePolicyNN (or any callable (8,) -> (4,))
         idio   : (B, T) frozen idiosyncratic draws
         Returns (X_final (B,16), total_reward (B,)).
         """
@@ -410,148 +577,80 @@ class ExogenousMarketEnvJAX(eqx.Module):
 
         def step_fn(carry, t_idx):
             X_t, cum = carry
-            a_hat  = vmap(policy)(vmap(self.normalize_state)(X_t))
-            a_t    = vmap(self.unnormalize_action)(X_t, a_hat)
-            r_t    = vmap(self.running_reward)(X_t, a_t)
+            A_exec = A_traj[t_idx + 1]
+            out    = vmap(policy)(vmap(self.normalize_state)(X_t))
+            a_t    = vmap(self.act_at, in_axes=(0, 0, None))(X_t, out, A_exec)
+            r_t    = vmap(self.running_reward, in_axes=(0, 0, None))(X_t, a_t, A_exec)
             next_X = vmap(self.single_step_dynamics, in_axes=(0, 0, 0, None, None))(
-                X_t, a_t, idio[:, t_idx], A_traj[t_idx + 1], P_traj[t_idx + 1]
-            )
+                X_t, a_t, idio[:, t_idx], A_exec, P_traj[t_idx + 1])
             return (next_X, cum + r_t), None
 
         (X_final, cum), _ = jax.lax.scan(
-            step_fn, (X0, jnp.zeros(B)), jnp.arange(T_int)
-        )
+            step_fn, (X0, jnp.zeros(B)), jnp.arange(T_int))
         return X_final, cum + vmap(self.terminal_reward)(X_final)
 
     def ensemble_trajectory(self, stacked, statics, P_traj, eps0, idio_pop,
                             q_lo=0.1, q_hi=0.9):
         """Per-type trajectories of the FP mixture, with dispersion bands.
-
-        Only summary statistics over agents are returned, so the arrays stay
-        tiny even for large K.
-
-        The spread is taken across all K*n_j agents of a type, which mixes two
-        sources: different FP blocks play different policies, and agents differ
-        in their idiosyncratic draw. That is the informative quantity — a
-        converged mixture has every block behaving alike, so the band narrowing
-        over FP iterations is itself a convergence signal.
-
-        Returns dict with, per type j:
-            state[j]      (T+1, 16)  mean state
-            action[j]     (T, 3)     mean action, and action_lo/action_hi
-            cum_r[j]      (T,)       mean cumulative running reward, + lo/hi
-            emission[j]   (T,)       mean per-step emissions, + lo/hi
-            term_r[j]     scalar     mean terminal reward
-        """
-        idx   = self.dic_indexes
+        Same outputs as on main; the population is cleared step by step."""
+        idx = self.dic_indexes
+        Xf, A, actions, diag, Xs_hist, w = self._scan_population(
+            stacked, statics, P_traj, eps0, idio_pop)
         T_int = int(self.T)
-        K     = jax.tree_util.tree_leaves(stacked[0])[0].shape[0]
-        X0    = self.population_initial_states(K)
-        w     = self.context_weights()
+        K     = Xf[0].shape[0]
         qs    = jnp.array([q_lo, q_hi])
+        rew   = vmap(vmap(vmap(self.running_reward, in_axes=(0, 0, None)),
+                          in_axes=(0, 0, None)), in_axes=(0, 0, 0))
 
-        step_dyn = vmap(
-            vmap(self.single_step_dynamics, in_axes=(0, 0, 0, None, None)),
-            in_axes=(0, 0, 0, None, None),
-        )
-        norm2   = vmap(vmap(self.normalize_state))
-        unnorm2 = vmap(vmap(self.unnormalize_action))
-        rew2    = vmap(vmap(self.running_reward))
-
-        def step_fn(carry, t_idx):
-            Xs, A_t, cums = carry
-
-            actions = []
-            for j in range(N_TYPES):
-                a_hat = apply_stacked(stacked[j], statics[j], norm2(Xs[j]))
-                actions.append(unnorm2(Xs[j], a_hat))
-
-            cums   = tuple(cums[j] + rew2(Xs[j], actions[j]) for j in range(N_TYPES))
-            per_type = jnp.stack([jnp.mean(a[..., 0]) for a in actions])
-            A_next   = self.compute_next_A_weighted(A_t, jnp.sum(w * per_type),
-                                                    eps0[t_idx])
-            P_next = P_traj[t_idx + 1]
-
-            eps_all, new_Xs = [], []
-            for j in range(N_TYPES):
-                eps_j = jnp.broadcast_to(idio_pop[j][:, t_idx],
-                                         (K, self.type_counts[j]))
-                eps_all.append(eps_j)
-                new_Xs.append(step_dyn(Xs[j], actions[j], eps_j, A_next, P_next))
-
-            # per-step emissions, per agent. Computed directly rather than by
-            # differencing a mean, because E[xi*eta] != E[xi]*E[eta] and we want
-            # quantiles of the per-agent flow, not differences of quantiles.
-            emis = []
-            for j in range(N_TYPES):
-                a1, a2 = actions[j][..., 1], actions[j][..., 2]
-                emis.append(Xs[j][..., idx["ef"]] * a1 * a2
-                            + Xs[j][..., idx["eg"]] * a1 * (1.0 - a2)
-                            + eps_all[j])
-
-            flat_a = [actions[j].reshape(-1, 3) for j in range(N_TYPES)]
-            flat_c = [cums[j].reshape(-1)       for j in range(N_TYPES)]
-            flat_e = [emis[j].reshape(-1)       for j in range(N_TYPES)]
-
-            ys = {
-                'A':          A_next,
-                'state':      tuple(jnp.mean(Xs[j].reshape(-1, 16), axis=0)
-                                    for j in range(N_TYPES)),
-                'action':     tuple(jnp.mean(flat_a[j], axis=0) for j in range(N_TYPES)),
-                'action_q':   tuple(jnp.quantile(flat_a[j], qs, axis=0)
-                                    for j in range(N_TYPES)),
-                'cum_r':      tuple(jnp.mean(flat_c[j]) for j in range(N_TYPES)),
-                'cum_r_q':    tuple(jnp.quantile(flat_c[j], qs) for j in range(N_TYPES)),
-                'emission':   tuple(jnp.mean(flat_e[j]) for j in range(N_TYPES)),
-                'emission_q': tuple(jnp.quantile(flat_e[j], qs) for j in range(N_TYPES)),
-            }
-            return (tuple(new_Xs), A_next, cums), ys
-
-        init_cums = tuple(jnp.zeros((K, self.type_counts[j])) for j in range(N_TYPES))
-        (Xf, _, _), ys = jax.lax.scan(
-            step_fn, (X0, self.A0, init_cums), jnp.arange(T_int)
-        )
-
-        final_mean = tuple(jnp.mean(Xf[j].reshape(-1, 16), axis=0)
-                           for j in range(N_TYPES))
-        term = tuple(jnp.mean(vmap(vmap(self.terminal_reward))(Xf[j]))
-                     for j in range(N_TYPES))
-
-        return {
-            'A_traj': jnp.concatenate([jnp.atleast_1d(self.A0), ys['A']]),
-            'P_traj': P_traj,
-            'state':  tuple(jnp.concatenate([ys['state'][j], final_mean[j][None, :]],
-                                            axis=0) for j in range(N_TYPES)),
-            'action':     ys['action'],
-            'action_lo':  tuple(ys['action_q'][j][:, 0, :] for j in range(N_TYPES)),
-            'action_hi':  tuple(ys['action_q'][j][:, 1, :] for j in range(N_TYPES)),
-            'cum_r':      ys['cum_r'],
-            'cum_r_lo':   tuple(ys['cum_r_q'][j][:, 0] for j in range(N_TYPES)),
-            'cum_r_hi':   tuple(ys['cum_r_q'][j][:, 1] for j in range(N_TYPES)),
-            'emission':   ys['emission'],
-            'emission_lo': tuple(ys['emission_q'][j][:, 0] for j in range(N_TYPES)),
-            'emission_hi': tuple(ys['emission_q'][j][:, 1] for j in range(N_TYPES)),
-            'term_r':     term,
-        }
+        out = {'A_traj': jnp.concatenate([jnp.atleast_1d(jnp.float32(A_REF)), A]),
+               'P_traj': P_traj, 'state': [], 'action': [], 'action_lo': [],
+               'action_hi': [], 'cum_r': [], 'cum_r_lo': [], 'cum_r_hi': [],
+               'emission': [], 'emission_lo': [], 'emission_hi': [], 'term_r': [],
+               'clearing': diag}
+        for j in range(N_TYPES):
+            Xj, aj = Xs_hist[j], actions[j]                      # (T,K,n,16), (T,K,n,3)
+            r = rew(Xj, aj, A)                                   # (T,K,n)
+            cum = jnp.cumsum(r, axis=0).reshape(T_int, -1)
+            eps_j = jnp.broadcast_to(idio_pop[j].T[:, None, :], (T_int, K, self.type_counts[j]))
+            emis = (Xj[..., idx['ef']] * aj[..., 1] * aj[..., 2]
+                    + Xj[..., idx['eg']] * aj[..., 1] * (1.0 - aj[..., 2])
+                    + eps_j).reshape(T_int, -1)
+            fa = aj.reshape(T_int, -1, 3)
+            aq = jnp.quantile(fa, qs, axis=1)                    # (2,T,3)
+            cq = jnp.quantile(cum, qs, axis=1)
+            eq = jnp.quantile(emis, qs, axis=1)
+            st = jnp.concatenate([Xj.reshape(T_int, -1, 16).mean(axis=1),
+                                  Xf[j].reshape(-1, 16).mean(axis=0)[None]], axis=0)
+            out['state'].append(st)
+            out['action'].append(fa.mean(axis=1))
+            out['action_lo'].append(aq[0]); out['action_hi'].append(aq[1])
+            out['cum_r'].append(cum.mean(axis=1))
+            out['cum_r_lo'].append(cq[0]); out['cum_r_hi'].append(cq[1])
+            out['emission'].append(emis.mean(axis=1))
+            out['emission_lo'].append(eq[0]); out['emission_hi'].append(eq[1])
+            out['term_r'].append(jnp.mean(vmap(vmap(self.terminal_reward))(Xf[j])))
+        for k in list(out):
+            if isinstance(out[k], list):
+                out[k] = tuple(out[k])
+        return out
 
     def agent_batch_trajectory(self, policy, j, A_traj, P_traj, idio):
-        """Mean trajectory of a batch of type-j agents against a frozen price
-        path. Same shapes as one type of ensemble_trajectory."""
+        """Mean trajectory of a batch of type-j agents against a frozen cleared
+        price path. Same shapes as one type of ensemble_trajectory."""
         T_int = int(self.T)
         B     = idio.shape[0]
         X0    = jnp.broadcast_to(self.type_initial_state(j), (B, 16))
-
-        idx = self.dic_indexes
+        idx   = self.dic_indexes
 
         def step_fn(carry, t_idx):
             X_t, cum = carry
-            a_hat  = vmap(policy)(vmap(self.normalize_state)(X_t))
-            a_t    = vmap(self.unnormalize_action)(X_t, a_hat)
-            cum    = cum + vmap(self.running_reward)(X_t, a_t)
+            A_exec = A_traj[t_idx + 1]
+            out    = vmap(policy)(vmap(self.normalize_state)(X_t))
+            a_t    = vmap(self.act_at, in_axes=(0, 0, None))(X_t, out, A_exec)
+            cum    = cum + vmap(self.running_reward, in_axes=(0, 0, None))(X_t, a_t, A_exec)
             eps_t  = idio[:, t_idx]
             next_X = vmap(self.single_step_dynamics, in_axes=(0, 0, 0, None, None))(
-                X_t, a_t, eps_t, A_traj[t_idx + 1], P_traj[t_idx + 1]
-            )
+                X_t, a_t, eps_t, A_exec, P_traj[t_idx + 1])
             emis = (X_t[:, idx["ef"]] * a_t[:, 1] * a_t[:, 2]
                     + X_t[:, idx["eg"]] * a_t[:, 1] * (1.0 - a_t[:, 2])
                     + eps_t)
@@ -560,8 +659,7 @@ class ExogenousMarketEnvJAX(eqx.Module):
             return (next_X, cum), ys
 
         (X_final, _), (states, actions, cums, emis) = jax.lax.scan(
-            step_fn, (X0, jnp.zeros(B)), jnp.arange(T_int)
-        )
+            step_fn, (X0, jnp.zeros(B)), jnp.arange(T_int))
         return {
             'state':    jnp.concatenate([states, jnp.mean(X_final, axis=0)[None, :]],
                                         axis=0),
@@ -572,65 +670,27 @@ class ExogenousMarketEnvJAX(eqx.Module):
         }
 
     def ensemble_diagnostics(self, stacked, statics, P_traj, eps0, idio_pop):
-        """Same rollout as ensemble_price_path, but also returns per-type mean
-        rewards and aggregate trade/production series. Used by the sanity
-        checks, not by training."""
-        T_int = int(self.T)
-        K     = jax.tree_util.tree_leaves(stacked[0])[0].shape[0]
-        X0    = self.population_initial_states(K)
-        w     = self.context_weights()
-
-        step_dyn = vmap(
-            vmap(self.single_step_dynamics, in_axes=(0, 0, 0, None, None)),
-            in_axes=(0, 0, 0, None, None),
-        )
-        norm2   = vmap(vmap(self.normalize_state))
-        unnorm2 = vmap(vmap(self.unnormalize_action))
-        rew2    = vmap(vmap(self.running_reward))
-
-        def step_fn(carry, t_idx):
-            Xs, A_t, cums = carry
-
-            actions = []
-            for j in range(N_TYPES):
-                a_hat = apply_stacked(stacked[j], statics[j], norm2(Xs[j]))
-                actions.append(unnorm2(Xs[j], a_hat))
-
-            cums   = tuple(cums[j] + rew2(Xs[j], actions[j]) for j in range(N_TYPES))
-            per_type = jnp.stack([jnp.mean(a[..., 0]) for a in actions])
-            A_next   = self.compute_next_A_weighted(A_t, jnp.sum(w * per_type),
-                                                    eps0[t_idx])
-            P_next = P_traj[t_idx + 1]
-
-            new_Xs = []
-            for j in range(N_TYPES):
-                eps_j = jnp.broadcast_to(idio_pop[j][:, t_idx],
-                                         (K, self.type_counts[j]))
-                new_Xs.append(step_dyn(Xs[j], actions[j], eps_j, A_next, P_next))
-
-            # weighted market-wide totals: sum_i f_i = N_total * sum_j w_j *
-            # mean_{i in j} f_i, so replacing n_j/N by w_j is the mean-field
-            # aggregate at the same scale as the old plain sum
-            N_tot = jnp.float32(K * int(self.agent_per_policy))
-            buy  = N_tot * jnp.sum(w * jnp.stack(
-                [jnp.mean(jnp.clip(a[..., 0], min=0.0)) for a in actions]))
-            sell = N_tot * jnp.sum(w * jnp.stack(
-                [jnp.mean(-jnp.clip(a[..., 0], max=0.0)) for a in actions]))
-            return (tuple(new_Xs), A_next, cums), (A_next, buy, sell)
-
-        init_cums = tuple(jnp.zeros((K, self.type_counts[j])) for j in range(N_TYPES))
-        (Xf, _, cums), (A_traj, buy, sell) = jax.lax.scan(
-            step_fn, (X0, self.A0, init_cums), jnp.arange(T_int)
-        )
-
-        term = tuple(vmap(vmap(self.terminal_reward))(Xf[j]) for j in range(N_TYPES))
+        """Same rollout as ensemble_price_path, plus per-type mean rewards and
+        aggregate trade series. Used by the sanity checks, not by training."""
+        Xf, A, actions, diag, Xs_hist, w = self._scan_population(
+            stacked, statics, P_traj, eps0, idio_pop)
+        K = Xf[0].shape[0]
+        rew = vmap(vmap(vmap(self.running_reward, in_axes=(0, 0, None)),
+                        in_axes=(0, 0, None)), in_axes=(0, 0, 0))
         per_type_reward = tuple(
-            jnp.mean(cums[j] + term[j]) for j in range(N_TYPES)
-        )
+            jnp.mean(rew(Xs_hist[j], actions[j], A).sum(axis=0)
+                     + vmap(vmap(self.terminal_reward))(Xf[j]))
+            for j in range(N_TYPES))
+        N_tot = jnp.float32(K * int(self.agent_per_policy))
+        buy  = N_tot * sum(w[j] * jnp.mean(jnp.clip(actions[j][..., 0], min=0.0),
+                                           axis=(1, 2)) for j in range(N_TYPES))
+        sell = N_tot * sum(w[j] * jnp.mean(-jnp.clip(actions[j][..., 0], max=0.0),
+                                           axis=(1, 2)) for j in range(N_TYPES))
         return {
-            'A_traj':          jnp.concatenate([jnp.atleast_1d(self.A0), A_traj]),
+            'A_traj':          jnp.concatenate([jnp.atleast_1d(jnp.float32(A_REF)), A]),
             'per_type_reward': per_type_reward,
             'trade_buy':       buy,
             'trade_sell':      sell,
             'X_final':         Xf,
+            'clearing':        diag,
         }

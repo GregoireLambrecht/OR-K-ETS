@@ -114,7 +114,7 @@ def simulate(args):
         kappa=GAMMA_REF[1], T=T,
         generate_P_func=generate_prices_ou, A0=A0_BASE, P0=P0,
         market_impact_func=market_impact_base,
-        generate_eps0_func=white_noise_A_base,
+        generate_eps0_func=supply_noise_base,      # net supply (market clearing)
         generate_eps_idiosyncratic_func=idiosyncratic_noise_base,
         A_scale=A_SCALE_BASE, P_scale=P_SCALE_BASE, agent_per_policy=agents)
     if mode == 'bau':
@@ -291,6 +291,8 @@ def main():
     ap.add_argument('--chunk', type=int, default=75)
     ap.add_argument('--seed-label', default='seed42')
     ap.add_argument('--replot', action='store_true')
+    ap.add_argument('--fig-root', default='figs_audit',
+                    help='root of the per-seed figures (<root>/<seed-label>/...)')
     ap.add_argument('--elev', type=float, default=24)
     ap.add_argument('--azim', type=float, default=-135,
                     help='azimuth of the revenue surfaces')
@@ -305,13 +307,14 @@ def main():
         d = dict(np.load(cache))
     else:
         d = simulate(args)
+        os.makedirs(os.path.dirname(cache), exist_ok=True)
         np.savez_compressed(cache, **d)
         print(f"cached -> {cache}")
     # the study is the results_<name> component of the run path, whatever the
     # nesting below it (results_floor30/choice or results_floor30/choice_seed3/choice)
     study = next((p for p in args.run_dir.split('/') if p.startswith('results_')),
                  'run').replace('results_', '')
-    figure(d, os.path.join('figs_audit', args.seed_label,
+    figure(d, os.path.join(args.fig_root, args.seed_label,
                            'sensibility_analysis', f'{args.x}_{args.y}',
                            f'{args.x}_{args.y}_{study}'), args.x, args.y,
            args.types)

@@ -835,6 +835,73 @@ def make_price_fn_batched(env_T, statics):
     return fn
 
 
+def make_price_diag_fn_batched(env_T, statics):
+    """make_price_fn_batched + the per-step market-clearing diagnostics."""
+    @eqx.filter_jit
+    def fn(stacked, P, eps0, idio_pop):
+        return jax.vmap(
+            lambda p, e: env_T.ensemble_price_path(stacked, statics, p, e, idio_pop,
+                                                   return_diag=True)
+        )(P, eps0)
+    return fn
+
+
+def chunked_tree(fn, n, chunk):
+    """chunked() for functions returning a pytree."""
+    outs = [fn(i, min(i + chunk, n)) for i in range(0, n, chunk)]
+    if len(outs) == 1:
+        return outs[0]
+    return jax.tree_util.tree_map(lambda *xs: jnp.concatenate(xs, axis=0), *outs)
+
+
+def clearing_metrics(env, A, diag):
+    """Summary of the market clearing over a frozen block.
+
+    A    : (S, T+1) price paths, A[:, 0] = A_REF, A[:, 1:] cleared prices
+    diag : per-step diagnostics from ensemble_price_path(return_diag=True)
+    Residuals are the violation of D(A_t) in N_[floor, ceil](A_t), averaged over
+    the days of a path (sum / T), then over paths; also relative to the market's
+    maximum trade per step, sum_j w_j C^f_j.
+    """
+    w   = np.asarray(env.context_weights())
+    cap = float(np.sum(w * np.asarray(env.agent_params[:, 5])))
+    A   = np.asarray(A)
+    Ac  = A[:, 1:]
+    d   = {k: np.asarray(v) for k, v in diag.items()}
+    res_day = d['resid'].mean(axis=1)                    # (S,) sum_t |r_t| / T
+    drift = np.diff(Ac, axis=1)
+    return {
+        'cap_per_step': cap,
+        'clear_resid_mean': float(res_day.mean()),
+        'clear_resid_mean_rel': float(res_day.mean() / cap),
+        'clear_resid_max_rel': float(d['resid'].max() / cap),
+        'cons_err_max_rel': float(np.abs(d['cons_err']).max() / cap),
+        'A_on_floor': float(d['on_floor'].mean()),
+        'A_on_ceil': float(d['on_ceil'].mean()),
+        'clear_flat_frac': float(d['flat'].mean()),
+        'gov_flow_mean': float(d['G'].mean()),
+        'gov_total_mean': float(d['G'].sum(axis=1).mean()),
+        'supply_abs_mean': float(np.abs(d['S']).mean()),
+        'price_drift_mean': float(drift.mean()),
+        'price_drift_std': float(drift.std()),
+        'A0_cleared': float(Ac[:, 0].mean()),
+        'A_cleared_mean': float(Ac.mean()),
+        'R_median': [float(x) for x in np.median(d['R_median'], axis=(0, 1))],
+        'beta_mean': [float(x) for x in d['beta_mean'].mean(axis=(0, 1))],
+        'beta_std': [float(x) for x in d['beta_std'].mean(axis=(0, 1))],
+        'f_mean': [float(x) for x in d['f_mean'].mean(axis=(0, 1))],
+        'short_frac': float((d['agg_gap_T'] > 0).mean()),
+        'gap_T_mean': float(d['agg_gap_T'].mean()),
+        'gap_T_p10': float(np.quantile(d['agg_gap_T'], 0.1)),
+        'gap_T_p90': float(np.quantile(d['agg_gap_T'], 0.9)),
+        'gap_T_type': [float(x) for x in d['gap_T_type'].mean(axis=0)],
+        'short_T_type': [float(x) for x in d['short_T_type'].mean(axis=0)],
+        'A_path_mean': [float(x) for x in A.mean(axis=0)],
+        'A_path_p10': [float(x) for x in np.quantile(A, 0.1, axis=0)],
+        'A_path_p90': [float(x) for x in np.quantile(A, 0.9, axis=0)],
+    }
+
+
 def make_batched_return_fn(env_T, j):
     """Returns of one policy across (sample, draw): A (S,T+1), P (S,T+1),
     idio (M,T) -> (S, M)."""
@@ -871,7 +938,8 @@ def chunked(fn, n, chunk):
 # Best response  —  trained against a POOL of priced common-noise paths
 # ═════════════════════════════════════════════════════════════════════════════
 
-def make_br_stage_fn_r2(env_T, statics, optimizer, nb_iterations, B, static):
+def make_br_stage_fn_r2(env_T, statics, optimizer, nb_iterations, B, static,
+                        n_restarts=1):
     """One jitted best-response stage, all three types at once.
 
     Every gradient step draws FRESH noise:
@@ -893,7 +961,9 @@ def make_br_stage_fn_r2(env_T, statics, optimizer, nb_iterations, B, static):
     `stacked_mix` is an argument because the mixture grows every FP iteration.
     """
     T_int  = int(env_T.T)
-    js     = jnp.arange(N_TYPES)
+    # n_restarts independent copies of the three types, stacked type-major
+    # per copy: row r*N_TYPES + j is copy r of type j
+    js     = jnp.tile(jnp.arange(N_TYPES), n_restarts)
     counts = env_T.type_counts
 
     def sample_noise(key):
@@ -938,7 +1008,7 @@ def make_br_stage_fn_r2(env_T, statics, optimizer, nb_iterations, B, static):
             return -jnp.mean(R) / env_T.reward_scale(j)   # exact reward only
 
         per = jax.vmap(per_type, in_axes=(0, 0, 0))(
-            p_stack, js, jax.random.split(key, N_TYPES))
+            p_stack, js, jax.random.split(key, js.shape[0]))
         return jnp.sum(per), per
 
     @jax.jit
@@ -960,15 +1030,46 @@ def make_br_stage_fn_r2(env_T, statics, optimizer, nb_iterations, B, static):
     return stage
 
 
-def train_best_response_r2(stacked_mix, key, stage_fns, optimizer, mm_warm,
-                           T_grid, iters, lrs, verbose=True):
-    """Multigrid best responses for all three types, from fresh networks
-    (market maker warm-started, see utils.pretrain / pretrain_mm.py)."""
+BR_SELECT_TAIL = 0.05     # selection statistic: mean training loss over the last 5 %
+
+
+def _train_br_restarts(make_model, stacked_mix, key, stage_fns, optimizer, mm_warm,
+                       T_grid, iters, lrs, n_restarts=1, verbose=True):
+    """Best responses for all three types, `n_restarts` independent fresh runs
+    per type trained side by side in one stacked batch, best run kept PER TYPE.
+
+    Why: a fresh producer BR first sits on a plateau (loss ~ -0.33) and only
+    sometimes jumps to the good basin (~ -0.6) before the cosine schedule has
+    decayed; a stuck run gives a negative (or near-zero) exploitability and
+    still enters the mixture. Two independent runs make "both stuck" rare
+    (br_budget_sweep.py, K=30 gamma_ref run).
+
+    Selection uses the mean TRAINING loss over the last BR_SELECT_TAIL of the
+    final stage, never the frozen evaluation set, so picking the max does not
+    bias the reported exploitability upward.
+
+    All copies see the same common-noise draws per step (the price path is
+    computed once) but have their own initialisation and idiosyncratic draws.
+    The market maker starts from the warm start in every copy.
+
+    Copy 0 uses exactly the keys of the single-run code, so n_restarts=1
+    reproduces earlier runs bit for bit.
+
+    Returns (triple, loss_hist, info): loss_hist holds the CHOSEN columns per
+    stage (n, N_TYPES); info has 'candidates' (one triple per copy),
+    'loss_all' (per stage, (n, n_restarts*N_TYPES)), 'loss_end' (R, N_TYPES)
+    and 'chosen' (copy index per type).
+    """
+    R = int(n_restarts)
     k_model, k_train = jax.random.split(key)
-    mkeys  = jax.random.split(k_model, N_TYPES)
-    models = [TypePolicyNN(key=mkeys[j]) for j in range(N_TYPES)]
-    if mm_warm is not None:
-        models[2] = mm_warm
+    models = []
+    for r in range(R):
+        kr = k_model if r == 0 else jax.random.fold_in(k_model, r)
+        mkeys = jax.random.split(kr, N_TYPES)
+        ms = [make_model(mkeys[j]) for j in range(N_TYPES)]
+        if mm_warm is not None:
+            ms[2] = mm_warm
+        models += ms
 
     parts   = [eqx.partition(m, eqx.is_array) for m in models]
     static  = parts[0][1]
@@ -976,23 +1077,66 @@ def train_best_response_r2(stacked_mix, key, stage_fns, optimizer, mm_warm,
                                      *[p for p, _ in parts])
     opt_state = optimizer.init(p_stack)
 
-    loss_hist = []
+    loss_all = []
     for i, T in enumerate(T_grid):
         if hasattr(opt_state, 'hyperparams'):
             opt_state.hyperparams['learning_rate'] = jnp.array(lrs[i])
         p_stack, opt_state, losses = stage_fns[T](
             p_stack, opt_state, jax.random.fold_in(k_train, i), stacked_mix)
-        losses = np.asarray(losses)
-        loss_hist.append(losses)
+        losses = np.asarray(losses)                        # (n, R*N_TYPES)
+        loss_all.append(losses)
         if verbose:
-            per = "  ".join(f"t{j}: {losses[0, j]:+.5f}->{losses[-1, j]:+.5f}"
-                            for j in range(N_TYPES))
-            print(f"    T={T:<5d} {per}", flush=True)
+            for r in range(R):
+                per = "  ".join(
+                    f"t{j}: {losses[0, r*N_TYPES+j]:+.5f}->{losses[-1, r*N_TYPES+j]:+.5f}"
+                    for j in range(N_TYPES))
+                tag = f"r{r} " if R > 1 else ""
+                print(f"    T={T:<5d} {tag}{per}", flush=True)
 
-    triple = tuple(
-        eqx.combine(jax.tree_util.tree_map(lambda x: x[j], p_stack), static)
-        for j in range(N_TYPES))
-    return triple, loss_hist
+    last = loss_all[-1]
+    tail = max(1, int(round(last.shape[0] * BR_SELECT_TAIL)))
+    loss_end = last[-tail:].mean(0).reshape(R, N_TYPES)
+    chosen = [int(np.argmin(loss_end[:, j])) for j in range(N_TYPES)]
+
+    def pick(i):
+        return eqx.combine(jax.tree_util.tree_map(lambda x: x[i], p_stack), static)
+
+    candidates = [tuple(pick(r * N_TYPES + j) for j in range(N_TYPES))
+                  for r in range(R)]
+    triple = tuple(candidates[chosen[j]][j] for j in range(N_TYPES))
+    cols = [chosen[j] * N_TYPES + j for j in range(N_TYPES)]
+    loss_hist = [L[:, cols] for L in loss_all]
+    if verbose and R > 1:
+        print("    BR selection (tail-mean train loss): " + "  ".join(
+            f"t{j}: " + "/".join(f"{loss_end[r, j]:+.4f}" for r in range(R))
+            + f" -> r{chosen[j]}" for j in range(N_TYPES)), flush=True)
+    info = {'candidates': candidates, 'loss_all': loss_all,
+            'loss_end': loss_end, 'chosen': chosen}
+    return triple, loss_hist, info
+
+
+def save_br_candidates(save_dir, k, info):
+    """Every trained BR network of FP iteration k (1-based), selected or not:
+    <save_dir>/br_candidates/iter_<k>_r<r>_type<j>.eqx"""
+    d = os.path.join(save_dir, 'br_candidates')
+    os.makedirs(d, exist_ok=True)
+    for r, trip in enumerate(info['candidates']):
+        for j, m in enumerate(trip):
+            eqx.tree_serialise_leaves(
+                os.path.join(d, f'iter_{k:03d}_r{r}_type{j}.eqx'), m)
+
+
+def train_best_response_r2(stacked_mix, key, stage_fns, optimizer, mm_warm,
+                           T_grid, iters, lrs, verbose=True, n_restarts=1,
+                           return_info=False):
+    """Multigrid best responses for all three types, from fresh networks
+    (market maker warm-started, see utils.pretrain / pretrain_mm.py).
+    n_restarts > 1: see _train_br_restarts. The stage_fns must have been built
+    with the same n_restarts."""
+    triple, loss_hist, info = _train_br_restarts(
+        lambda k: TypePolicyNN(key=k), stacked_mix, key, stage_fns, optimizer,
+        mm_warm, T_grid, iters, lrs, n_restarts=n_restarts, verbose=verbose)
+    return (triple, loss_hist, info) if return_info else (triple, loss_hist)
 
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -1036,7 +1180,7 @@ def fictitious_play_rung2(env, gamma_ref=GAMMA_REF, K=50,
                           B=256, S=500, M=32, eval_chunk=50,
                           window=200, key=None, save_dir=None, plot_dir=None,
                           mm_warmstart=None, lr_schedule=None, lr_min=None,
-                          verbose=True, meta=None):
+                          verbose=True, meta=None, br_restarts=1):
     """Rung 2 fictitious play — one scenario, stochastic common noise.
 
     What changes from Rung 1
@@ -1120,6 +1264,7 @@ def fictitious_play_rung2(env, gamma_ref=GAMMA_REF, K=50,
     _, model_static = eqx.partition(history[0][0], eqx.is_array)
     statics    = tuple(stack_policies([history[0][j]])[1] for j in range(N_TYPES))
     price_fns  = {T: make_price_fn_batched(envs_T[T], statics) for T in T_grid}
+    diag_fn    = make_price_diag_fn_batched(env_f, statics)
     ret_fns    = [make_batched_return_fn(env_f, j) for j in range(N_TYPES)]
     hist_fns   = [make_batched_hist_fn(env_f, j, model_static) for j in range(N_TYPES)]
 
@@ -1135,7 +1280,8 @@ def fictitious_play_rung2(env, gamma_ref=GAMMA_REF, K=50,
     else:
         optimizer = optax.inject_hyperparams(optax.adam)(learning_rate=lrs[0])
     stage_fns = {T: make_br_stage_fn_r2(envs_T[T], statics, optimizer,
-                                        iters[i], B, model_static)
+                                        iters[i], B, model_static,
+                                        n_restarts=br_restarts)
                  for i, T in enumerate(T_grid)}
 
     # One fixed common-noise draw for every diagnostic sheet, so the
@@ -1167,24 +1313,37 @@ def fictitious_play_rung2(env, gamma_ref=GAMMA_REF, K=50,
         stacked = tuple(stack_policies([h[j] for h in history])[0]
                         for j in range(N_TYPES))
 
-        # ── verification price paths: FROZEN common noise, chunked ──────────
-        A_ver = chunked(lambda a, b: price_fns[T_final](
+        # ── verification price paths: FROZEN common noise, chunked, cleared ─
+        A_ver, clr_diag = chunked_tree(lambda a, b: diag_fn(
             stacked, ver['P'][a:b], ver['eps0'][a:b], ver['idio_pop']),
             S, eval_chunk)
+        clr = clearing_metrics(env_f, A_ver, clr_diag)
 
         if verbose:
-            a = np.asarray(A_ver)
-            print(f"  price over {S} frozen draws: mean {a.mean():.3f}  "
-                  f"final median {np.median(a[:, -1]):.3f}  "
+            a = np.asarray(A_ver)[:, 1:]
+            print(f"  cleared price over {S} frozen draws: mean {a.mean():.3f}  "
+                  f"A_0 {clr['A0_cleared']:.3f}  final median {np.median(a[:, -1]):.3f}  "
                   f"[p10 {np.quantile(a[:, -1], .1):.2f}, "
-                  f"p90 {np.quantile(a[:, -1], .9):.2f}]  "
-                  f"on-floor {float(np.mean(a <= floor + 1e-6)):.1%}", flush=True)
+                  f"p90 {np.quantile(a[:, -1], .9):.2f}]", flush=True)
+            print(f"  clearing: resid/day {clr['clear_resid_mean']:.3g} "
+                  f"({clr['clear_resid_mean_rel']:.2e} of cap, max "
+                  f"{clr['clear_resid_max_rel']:.2e})  cons err {clr['cons_err_max_rel']:.2e}  "
+                  f"floor {clr['A_on_floor']:.1%}  ceil {clr['A_on_ceil']:.1%}  "
+                  f"flat {clr['clear_flat_frac']:.1%}  G/step {clr['gov_flow_mean']:+.3g}  "
+                  f"drift {clr['price_drift_mean']:+.3f} +/- {clr['price_drift_std']:.3f}  "
+                  f"short {clr['short_frac']:.1%}  gap_T {clr['gap_T_mean']:+.1f} "
+                  f"[{clr['gap_T_p10']:+.1f}, {clr['gap_T_p90']:+.1f}]  "
+                  f"indiv short {np.round(clr['short_T_type'], 2)}", flush=True)
+            print(f"  schedules: beta mean {np.round(clr['beta_mean'], 3)}  "
+                  f"R median {np.round(clr['R_median'], 2)}  "
+                  f"f mean {np.round(clr['f_mean'], 2)}", flush=True)
 
         # ── best responses ──────────────────────────────────────────────────
         t_br = time.time()
-        new_triple, loss_hist = train_best_response_r2(
+        new_triple, loss_hist, br_info = train_best_response_r2(
             stacked, jax.random.fold_in(k_iter_base, k), stage_fns, optimizer,
-            mm_warm, T_grid, iters, lrs, verbose=verbose)
+            mm_warm, T_grid, iters, lrs, verbose=verbose,
+            n_restarts=br_restarts, return_info=True)
         br_secs = time.time() - t_br
 
         # full BR training curves on disk, as Rung 3 does (the record keeps
@@ -1196,7 +1355,10 @@ def fictitious_play_rung2(env, gamma_ref=GAMMA_REF, K=50,
             np.savez_compressed(
                 os.path.join(save_dir, loss_file),
                 **{f'stage{i}_T{T}': np.asarray(L, dtype=np.float32)
-                   for i, (T, L) in enumerate(zip(T_grid, loss_hist))})
+                   for i, (T, L) in enumerate(zip(T_grid, loss_hist))},
+                **{f'all_stage{i}_T{T}': np.asarray(L, dtype=np.float32)
+                   for i, (T, L) in enumerate(zip(T_grid, br_info['loss_all']))})
+            save_br_candidates(save_dir, k + 1, br_info)
         if verbose:
             print(f"    trained in {_hms(br_secs)}", flush=True)
 
@@ -1239,11 +1401,15 @@ def fictitious_play_rung2(env, gamma_ref=GAMMA_REF, K=50,
             'A_final_median': float(np.median(np.asarray(A_ver)[:, -1])),
             'A_final_p10': float(np.quantile(np.asarray(A_ver)[:, -1], .1)),
             'A_final_p90': float(np.quantile(np.asarray(A_ver)[:, -1], .9)),
-            'A_on_floor': float(np.mean(np.asarray(A_ver) <= floor + 1e-6)),
+            'clearing': clr,
+            'A_on_floor': clr['A_on_floor'],
             'br_seconds': br_secs,
             'br_loss_file': loss_file,
             'br_loss_last': [[float(L[-1, j]) for j in range(N_TYPES)]
                              for L in loss_hist],
+            'br_restarts': br_restarts,
+            'br_chosen': br_info['chosen'],
+            'br_loss_end': np.asarray(br_info['loss_end']).tolist(),
         }
 
         if plot_dir:
@@ -1277,6 +1443,7 @@ def fictitious_play_rung2(env, gamma_ref=GAMMA_REF, K=50,
                 'verify_seed': VERIFY_SEED,
                 'mm_warmstart': mm_warmstart,
                 'lr_schedule': lr_schedule, 'lr_min': lr_min,
+                'br_restarts': br_restarts,
                 **(meta or {}), 'records': records})
             if verbose:
                 print(f"  checkpoint saved  [iteration "
@@ -1301,7 +1468,8 @@ CTX_NAMES = ('init_alloc', 'kappa', 'Afloor', 'financial_inst')
 # sheet isolates a single regulatory instrument. BM_uniform is deliberately
 # absent: it is held at the environment's constructor value and the conditioner
 # never sees it, so a row varying it would be off-distribution.
-CTX_REF = (GAMMA_REF[0], GAMMA_REF[1], A_FLOOR_BASE, 0.4)
+# market-clearing branch: the reference is the paper's current_kets scenario
+CTX_REF = (0.9, 3.0, 6.0, 0.4)
 
 _R = dict(zip(CTX_NAMES, CTX_REF))
 
@@ -1313,10 +1481,11 @@ def _ctx(**kw):
 
 FIXED_SCENARIOS = (
     ('ref',        _ctx()),
-    ('alloc_hi',   _ctx(init_alloc=0.9)),
+    ('alloc_hi',   _ctx(init_alloc=1.1)),
     ('alloc_lo',   _ctx(init_alloc=0.1)),
     ('kappa_hi',   _ctx(kappa=5.0)),
     ('kappa_lo',   _ctx(kappa=1.0)),
+    ('kappa_sub',  _ctx(kappa=0.9)),       # below 1: price expected on the floor
     ('floor_lo',   _ctx(Afloor=FLOOR_MIN)),
     ('floor_hi',   _ctx(Afloor=FLOOR_MAX)),
     ('mm_thin',    _ctx(financial_inst=0.05)),
@@ -1433,6 +1602,18 @@ def make_price_fn_r3(env_T, statics):
     return fn
 
 
+def make_price_diag_fn_r3(env_T, statics):
+    """make_price_fn_r3 + the per-step market-clearing diagnostics."""
+    @eqx.filter_jit
+    def fn(stacked, gam, P, eps0, idio_pop):
+        def one(g, p, e):
+            sm = tuple(bind_stacked(stacked[j], g) for j in range(N_TYPES))
+            return bind_env(env_T, g).ensemble_price_path(
+                sm, statics, p, e, idio_pop, return_diag=True)
+        return jax.vmap(one)(gam, P, eps0)
+    return fn
+
+
 def make_batched_return_fn_r3(env_T, j):
     """Returns of one policy over the rows of a block -> (S, M)."""
     @eqx.filter_jit
@@ -1466,7 +1647,8 @@ def make_batched_hist_fn_r3(env_T, j, static):
 # Best response — fresh (scenario, noise) at every gradient step
 # ═════════════════════════════════════════════════════════════════════════════
 
-def make_br_stage_fn_r3(env_T, statics, optimizer, nb_iterations, B, static):
+def make_br_stage_fn_r3(env_T, statics, optimizer, nb_iterations, B, static,
+                        n_restarts=1):
     """One jitted best-response stage, all three types at once.
 
     Every gradient step draws B independent markets, and each market draws its
@@ -1480,7 +1662,9 @@ def make_br_stage_fn_r3(env_T, statics, optimizer, nb_iterations, B, static):
     one per forward and one per backward.
     """
     T_int  = int(env_T.T)
-    js     = jnp.arange(N_TYPES)
+    # n_restarts independent copies of the three types, stacked type-major
+    # per copy: row r*N_TYPES + j is copy r of type j
+    js     = jnp.tile(jnp.arange(N_TYPES), n_restarts)
     counts = env_T.type_counts
 
     def sample_market(key):
@@ -1528,7 +1712,7 @@ def make_br_stage_fn_r3(env_T, statics, optimizer, nb_iterations, B, static):
             return -jnp.mean(R) / env_T.reward_scale(j)
 
         per = jax.vmap(per_type, in_axes=(0, 0, 0))(
-            p_stack, js, jax.random.split(key, N_TYPES))
+            p_stack, js, jax.random.split(key, js.shape[0]))
         return jnp.sum(per), per
 
     @jax.jit
@@ -1551,38 +1735,15 @@ def make_br_stage_fn_r3(env_T, statics, optimizer, nb_iterations, B, static):
 
 
 def train_best_response_r3(stacked_mix, key, stage_fns, optimizer, mm_warm,
-                           T_grid, iters, lrs, verbose=True):
+                           T_grid, iters, lrs, verbose=True, n_restarts=1,
+                           return_info=False):
     """Best responses for all three types, from fresh FiLM networks (market
-    maker warm-started, see pretrain_mm_r3.py)."""
-    k_model, k_train = jax.random.split(key)
-    mkeys  = jax.random.split(k_model, N_TYPES)
-    models = [new_policy(mkeys[j]) for j in range(N_TYPES)]
-    if mm_warm is not None:
-        models[2] = mm_warm
-
-    parts   = [eqx.partition(m, eqx.is_array) for m in models]
-    static  = parts[0][1]
-    p_stack = jax.tree_util.tree_map(lambda *xs: jnp.stack(xs),
-                                     *[p for p, _ in parts])
-    opt_state = optimizer.init(p_stack)
-
-    loss_hist = []
-    for i, T in enumerate(T_grid):
-        if hasattr(opt_state, 'hyperparams'):
-            opt_state.hyperparams['learning_rate'] = jnp.array(lrs[i])
-        p_stack, opt_state, losses = stage_fns[T](
-            p_stack, opt_state, jax.random.fold_in(k_train, i), stacked_mix)
-        losses = np.asarray(losses)
-        loss_hist.append(losses)
-        if verbose:
-            per = "  ".join(f"t{j}: {losses[0, j]:+.5f}->{losses[-1, j]:+.5f}"
-                            for j in range(N_TYPES))
-            print(f"    T={T:<5d} {per}", flush=True)
-
-    triple = tuple(
-        eqx.combine(jax.tree_util.tree_map(lambda x: x[j], p_stack), static)
-        for j in range(N_TYPES))
-    return triple, loss_hist
+    maker warm-started, see pretrain_mm_r3.py). n_restarts > 1: see
+    _train_br_restarts."""
+    triple, loss_hist, info = _train_br_restarts(
+        new_policy, stacked_mix, key, stage_fns, optimizer,
+        mm_warm, T_grid, iters, lrs, n_restarts=n_restarts, verbose=verbose)
+    return (triple, loss_hist, info) if return_info else (triple, loss_hist)
 
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -1627,9 +1788,13 @@ def eval_block(env_f, blk, stacked, stacked_hist, new_triple, price_fn,
     maker as though it held 40%. On a fixed block every row shares one context
     and this reduces to the old formula exactly.
     """
-    A = chunked(lambda a, b: price_fn(stacked, blk['gam'][a:b], blk['P'][a:b],
-                                      blk['eps0'][a:b], blk['idio_pop']),
-                blk['S'], eval_chunk)
+    # price_fn is make_price_diag_fn_r3: cleared prices + clearing diagnostics
+    A, clr_diag = chunked_tree(lambda a, b: price_fn(
+        stacked, blk['gam'][a:b], blk['P'][a:b], blk['eps0'][a:b], blk['idio_pop']),
+        blk['S'], eval_chunk)
+    # weights / capacity of the block's first row (exact on a fixed block; on
+    # the prior block only the relative residual uses it)
+    clr = clearing_metrics(bind_env(env_f, blk['gam'][0]), A, clr_diag)
 
     rows, per_type = [], []
     for j in range(N_TYPES):
@@ -1663,8 +1828,8 @@ def eval_block(env_f, blk, stacked, stacked_hist, new_triple, price_fn,
         'A_final_median': float(np.median(a[:, -1])),
         'A_final_p10': float(np.quantile(a[:, -1], .1)),
         'A_final_p90': float(np.quantile(a[:, -1], .9)),
-        'A_on_floor': float(np.mean(a <= fl + 1e-6)),
-        'A_on_floor_ref': float(np.mean(a <= floor + 1e-6)),
+        'A_on_floor': clr['A_on_floor'],
+        'clearing': clr,
     }
     return out, A
 
@@ -1677,7 +1842,7 @@ def fictitious_play_rung3(env, K=50, T_grid=(365,), iters=(8000,), lrs=(1e-3,),
                           B=256, S=500, S_fixed=250, M=32, eval_chunk=50,
                           window=200, key=None, save_dir=None, plot_dir=None,
                           mm_warmstart=None, lr_schedule=None, lr_min=None,
-                          verbose=True, meta=None):
+                          verbose=True, meta=None, br_restarts=1):
     """Rung 3 fictitious play — the BE layer, and the object of the study.
 
     What changes from Rung 2
@@ -1774,7 +1939,7 @@ def fictitious_play_rung3(env, K=50, T_grid=(365,), iters=(8000,), lrs=(1e-3,),
 
     _, model_static = eqx.partition(history[0][0], eqx.is_array)
     statics   = tuple(stack_policies([history[0][j]])[1] for j in range(N_TYPES))
-    price_fns = {T: make_price_fn_r3(envs_T[T], statics) for T in T_grid}
+    price_fns = {T: make_price_diag_fn_r3(envs_T[T], statics) for T in T_grid}
     ret_fns   = [make_batched_return_fn_r3(env_f, j) for j in range(N_TYPES)]
     hist_fns  = [make_batched_hist_fn_r3(env_f, j, model_static)
                  for j in range(N_TYPES)]
@@ -1791,7 +1956,8 @@ def fictitious_play_rung3(env, K=50, T_grid=(365,), iters=(8000,), lrs=(1e-3,),
     else:
         optimizer = optax.inject_hyperparams(optax.adam)(learning_rate=lrs[0])
     stage_fns = {T: make_br_stage_fn_r3(envs_T[T], statics, optimizer,
-                                        iters[i], B, model_static)
+                                        iters[i], B, model_static,
+                                        n_restarts=br_restarts)
                  for i, T in enumerate(T_grid)}
 
     plot_noise = None
@@ -1822,9 +1988,10 @@ def fictitious_play_rung3(env, K=50, T_grid=(365,), iters=(8000,), lrs=(1e-3,),
 
         # ── best responses ──────────────────────────────────────────────────
         t_br = time.time()
-        new_triple, loss_hist = train_best_response_r3(
+        new_triple, loss_hist, br_info = train_best_response_r3(
             stacked, jax.random.fold_in(k_iter_base, k), stage_fns, optimizer,
-            mm_warm, T_grid, iters, lrs, verbose=verbose)
+            mm_warm, T_grid, iters, lrs, verbose=verbose,
+            n_restarts=br_restarts, return_info=True)
         br_secs = time.time() - t_br
         if verbose:
             print(f"    trained in {_hms(br_secs)}", flush=True)
@@ -1840,7 +2007,10 @@ def fictitious_play_rung3(env, K=50, T_grid=(365,), iters=(8000,), lrs=(1e-3,),
             np.savez_compressed(
                 os.path.join(save_dir, loss_file),
                 **{f'stage{i}_T{T}': np.asarray(L, dtype=np.float32)
-                   for i, (T, L) in enumerate(zip(T_grid, loss_hist))})
+                   for i, (T, L) in enumerate(zip(T_grid, loss_hist))},
+                **{f'all_stage{i}_T{T}': np.asarray(L, dtype=np.float32)
+                   for i, (T, L) in enumerate(zip(T_grid, br_info['loss_all']))})
+            save_br_candidates(save_dir, k + 1, br_info)
 
         # ── the four frozen blocks ──────────────────────────────────────────
         blk_recs = {}
@@ -1868,6 +2038,16 @@ def fictitious_play_rung3(env, K=50, T_grid=(365,), iters=(8000,), lrs=(1e-3,),
                 print(f"      weighted {rec_b['weighted']:+.2f}  "
                       f"({rec_b['weighted_relative']:+.4%})   "
                       f"||A^k-A^k-1||_2 {rec_b['path_l2']:.4f}", flush=True)
+                c = rec_b['clearing']
+                print(f"      clearing: resid/day {c['clear_resid_mean_rel']:.2e} of cap "
+                      f"(max {c['clear_resid_max_rel']:.2e})  floor {c['A_on_floor']:.1%}  "
+                      f"ceil {c['A_on_ceil']:.1%}  flat {c['clear_flat_frac']:.1%}  "
+                      f"G/step {c['gov_flow_mean']:+.3g}  drift {c['price_drift_mean']:+.3f}"
+                      f" +/- {c['price_drift_std']:.3f}  A_0 {c['A0_cleared']:.2f}  "
+                      f"short {c['short_frac']:.1%}  gap_T {c['gap_T_mean']:+.1f} "
+                      f"[{c['gap_T_p10']:+.1f}, {c['gap_T_p90']:+.1f}]  "
+                      f"indiv short {np.round(c['short_T_type'], 2)}  "
+                      f"beta {np.round(c['beta_mean'], 2)}", flush=True)
 
         rec = {
             'iteration': k + 1, 'mixture_size': len(history),
@@ -1881,6 +2061,9 @@ def fictitious_play_rung3(env, K=50, T_grid=(365,), iters=(8000,), lrs=(1e-3,),
             'br_loss_file': loss_file,
             'br_loss_last': [[float(L[-1, j]) for j in range(N_TYPES)]
                              for L in loss_hist],
+            'br_restarts': br_restarts,
+            'br_chosen': br_info['chosen'],
+            'br_loss_end': np.asarray(br_info['loss_end']).tolist(),
         }
 
         if plot_dir:
@@ -1926,6 +2109,7 @@ def fictitious_play_rung3(env, K=50, T_grid=(365,), iters=(8000,), lrs=(1e-3,),
                 'verify_seed': VERIFY_SEED_R3,
                 'mm_warmstart': mm_warmstart,
                 'lr_schedule': lr_schedule, 'lr_min': lr_min,
+                'br_restarts': br_restarts,
                 **(meta or {}), 'records': records})
             if verbose:
                 print(f"  checkpoint saved  [iteration "

@@ -3,6 +3,7 @@ import jax.numpy as jnp
 import equinox as eqx
 import numpy as np
 from typing import List
+from envs.base_params import BETA_MIN
 
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -22,8 +23,17 @@ STATE_DIM_DYNAMIC = 8   # t, theta, xi_f, xi_g, eps, A, P, A_avg
 
 
 class TypePolicyNN(eqx.Module):
-    """Deterministic policy for a single agent type. Returns (f, xi, eta) in
-    normalised units: f in [-1,1], xi in [0,1], eta in [0,1]."""
+    """Deterministic policy for a single agent type (market-clearing head).
+
+    Returns (alpha, beta, xi_hat, eta_hat), evaluated on the PRE-TRADE state:
+      alpha    unbounded       position of the demand schedule
+      beta     > BETA_MIN      slope of the demand schedule (normalised price)
+      xi_hat   in [0, 1]       production
+      eta_hat  in [0, 1]       fossil share (may be overridden by tech)
+    The trade itself is f(a) = cap_f * tanh(alpha - beta (a - A_pre)/A_scale),
+    clipped, built by the env (MARKET_CLEARING.md §1.1). The network never sees
+    the candidate price, so f is nonincreasing in a for any weights.
+    """
 
     layers: list
     in_dim:     int = eqx.field(static=True)
@@ -33,7 +43,7 @@ class TypePolicyNN(eqx.Module):
         self,
         in_dim:       int       = STATE_DIM_DYNAMIC,
         architecture: List[int] = [64, 64, 64],
-        action_dim:   int       = 3,
+        action_dim:   int       = 4,
         key = None,
     ):
         if key is None:
@@ -44,10 +54,14 @@ class TypePolicyNN(eqx.Module):
 
         dims = [in_dim] + list(architecture) + [action_dim]
         keys = jax.random.split(key, len(dims) - 1)
-        self.layers = [
+        layers = [
             eqx.nn.Linear(dims[i], dims[i + 1], key=keys[i])
             for i in range(len(dims) - 1)
         ]
+        # beta ~ 1 at initialisation: softplus(b) = 1 - BETA_MIN
+        b = layers[-1].bias.at[1].set(float(np.log(np.expm1(1.0 - BETA_MIN))))
+        layers[-1] = eqx.tree_at(lambda l: l.bias, layers[-1], b)
+        self.layers = layers
 
     def __call__(self, x):
         h = x
@@ -55,9 +69,10 @@ class TypePolicyNN(eqx.Module):
             h = jax.nn.silu(layer(h))
         out = self.layers[-1](h)
         return jnp.stack([
-            jnp.tanh(out[0]),          # f   in [-1, 1]
-            jax.nn.sigmoid(out[1]),    # xi  in [0, 1]
-            jax.nn.sigmoid(out[2]),    # eta in [0, 1] (may be overridden by tech)
+            out[0],                                  # alpha
+            BETA_MIN + jax.nn.softplus(out[1]),      # beta > 0
+            jax.nn.sigmoid(out[2]),                  # xi_hat
+            jax.nn.sigmoid(out[3]),                  # eta_hat
         ])
 
 
@@ -120,7 +135,7 @@ class ContextActionNN(eqx.Module):
         self,
         state_dim:    int       = STATE_DIM_DYNAMIC,
         context_dim:  int       = 4,
-        action_dim:   int       = 3,
+        action_dim:   int       = 4,
         architecture: List[int] = [64, 64, 64],
         film_hidden:  int       = 32,
         key = None,
@@ -140,10 +155,14 @@ class ContextActionNN(eqx.Module):
         trunk_keys = keys[:n_layers]
         film_keys  = keys[n_layers:]
 
-        self.trunk_layers = [
+        trunk = [
             eqx.nn.Linear(dims[i], dims[i + 1], key=trunk_keys[i])
             for i in range(n_layers)
         ]
+        # market clearing: beta ~ 1 at initialisation, softplus(b) = 1 - BETA_MIN
+        b = trunk[-1].bias.at[1].set(float(np.log(np.expm1(1.0 - BETA_MIN))))
+        trunk[-1] = eqx.tree_at(lambda l: l.bias, trunk[-1], b)
+        self.trunk_layers = trunk
         self.film_layers = [
             FiLMLayer(context_dim, architecture[i], film_hidden, key=film_keys[i])
             for i in range(self.n_hidden)
@@ -157,10 +176,11 @@ class ContextActionNN(eqx.Module):
             h = jax.nn.silu(gamma * h + beta)
 
         out = self.trunk_layers[self.n_hidden](h)
-        return jnp.stack([
-            jnp.tanh(out[0]),
-            jax.nn.sigmoid(out[1]),
-            jax.nn.sigmoid(out[2]),
+        return jnp.stack([                           # market-clearing head
+            out[0],                                  # alpha
+            BETA_MIN + jax.nn.softplus(out[1]),      # beta > 0
+            jax.nn.sigmoid(out[2]),                  # xi_hat
+            jax.nn.sigmoid(out[3]),                  # eta_hat
         ])
 
 

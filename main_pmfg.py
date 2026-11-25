@@ -1,5 +1,10 @@
 """PMFG fictitious play at ONE fixed context, unconditional policies.
 
+market-clearing branch: the price is cleared every step (envs/environment.py
+_population_step), eps0 is the exogenous net supply, the policies output a
+demand schedule (alpha, beta) + (xi, eta). Use new result directories
+(results_mc_pmfg/...): checkpoints from main do not load.
+
     python3 main_pmfg.py --scenario current_kets --seed 1 --model-dir results_pmfg/current_kets_seed1
 
 The computational counterpart of the BE-MFG solve: the same fictitious-play
@@ -54,6 +59,8 @@ p.add_argument('--iters', type=str, default='12000')
 p.add_argument('--lr', type=str, default='0.001')
 p.add_argument('--lr-schedule', type=str, default='cosine', choices=['cosine'])
 p.add_argument('--lr-min', type=float, default=1e-4)
+p.add_argument('--br-restarts', type=int, default=1,
+               help='independent fresh BRs per type per FP iteration; best kept by train loss')
 p.add_argument('--mm-steps', type=int, default=6000)
 p.add_argument('--mm-batch', type=int, default=4096)
 args = p.parse_args()
@@ -72,7 +79,7 @@ env = ExogenousMarketEnvJAX(
     kappa=GAMMA_REF[1], T=T_GRID[-1],
     generate_P_func=generate_prices_ou, A0=A0_BASE, P0=P0,
     market_impact_func=market_impact_base,
-    generate_eps0_func=white_noise_A_base,
+    generate_eps0_func=supply_noise_base,      # net supply (market clearing)
     generate_eps_idiosyncratic_func=idiosyncratic_noise_base,
     A_scale=A_SCALE_BASE, P_scale=P_SCALE_BASE,
     agent_per_policy=args.agents,
@@ -98,6 +105,9 @@ def _sample(key, B, theta_max=0.45):
         _target(t_n, th_n)
 
 
+BETA_PULL = 1e-2
+
+
 def fit_mm_warmstart(path, steps, batch, seed=0):
     if os.path.exists(path):
         print(f"market-maker warm start found: {path}", flush=True)
@@ -108,9 +118,13 @@ def fit_mm_warmstart(path, steps, batch, seed=0):
     st = opt.init(params)
 
     def loss_fn(q, key):
+        # market clearing: at an unchanged price (a = A_pre) the centred
+        # schedule trades cap_f * tanh(alpha), so fit tanh(alpha) to the
+        # heuristic and pull beta weakly towards 1 (MARKET_CLEARING.md §2.5)
         S, Y = _sample(key, batch)
-        pred = jax.vmap(eqx.combine(q, static))(S)[:, 0]
-        return jnp.mean((pred - Y) ** 2)
+        out = jax.vmap(eqx.combine(q, static))(S)
+        return (jnp.mean((jnp.tanh(out[:, 0]) - Y) ** 2)
+                + BETA_PULL * jnp.mean((out[:, 1] - 1.0) ** 2))
 
     @jax.jit
     def train(q, s, key):
@@ -138,11 +152,11 @@ mm_path = fit_mm_warmstart(os.path.join(args.model_dir, 'mm_warmstart_pmfg.eqx')
                            args.mm_steps, args.mm_batch)
 
 print("=" * 76, flush=True)
-print(f"PMFG (unconditional FP)  |  scenario {args.scenario} = {tuple(ctx)}  "
+print(f"PMFG + MARKET CLEARING (unconditional FP)  |  scenario {args.scenario} = {tuple(ctx)}  "
       f"|  seed {args.seed}")
 print(f"save       -> {args.model_dir}")
 print(f"JAX devices: {jax.devices()}")
-print(f"T {T_GRID}, iters {ITERS}, lr {LRS} {args.lr_schedule} -> {args.lr_min:g}")
+print(f"T {T_GRID}, iters {ITERS}, lr {LRS} {args.lr_schedule} -> {args.lr_min:g}, BR restarts {args.br_restarts}")
 print(f"K = {args.nb_policy}, B = {args.batch}, S = {args.verify_samples}, "
       f"M = {args.eval_samples}")
 print("=" * 76, flush=True)
@@ -153,6 +167,7 @@ history, records = fictitious_play_rung2(
     S=args.verify_samples, M=args.eval_samples, eval_chunk=args.eval_chunk,
     key=jax.random.PRNGKey(args.seed), save_dir=args.model_dir, plot_dir=None,
     mm_warmstart=mm_path, lr_schedule=args.lr_schedule, lr_min=args.lr_min,
+    br_restarts=args.br_restarts,
     meta={'solver': 'pmfg', 'scenario': args.scenario, 'seed': args.seed,
           'context': [float(x) for x in ctx]},
 )

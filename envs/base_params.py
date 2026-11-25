@@ -14,7 +14,7 @@ KAPPA_BASE = 3
 
 BM_FUEL = 0.8
 BM_GREEN = 0.4
-BM_UNIFORM = 0.4
+BM_UNIFORM = 1.0   # was 0.4 (until 2026-11-24): init_alloc is now the share of the year's full-fossil emissions
 
 BM_RATIO = {'large': 0.75, 'base':0.13}
 
@@ -65,6 +65,25 @@ MEAN_MARKET_IMPACT = 7*BIG_ON_PRIVATE + 1*(1-BIG_ON_PRIVATE)
 def market_impact_base(f):
     coeff = 2
     return f/(CAP_F_BASE*MEAN_MARKET_IMPACT*coeff)
+
+# ── market clearing (MARKET_CLEARING.md §2.1) ─────────────────────────────────
+# The price is no longer moved by a reduced-form impact h(f): every agent
+# submits a demand schedule and A_t clears aggregate trade against an exogenous
+# net supply S_t = SIGMA_S * eps0_t * sqrt(dt) inside [Afloor, A_CEIL].
+# market_impact_base / white_noise_A_base below are LEGACY on this branch.
+A_REF       = A0_BASE        # pre-open price A^pre_0: tie-breaker / network input only
+A_CEIL      = 200.0          # artificial ceiling (USD/tCO2), for existence only; must not bind
+BETA_MIN    = 0.5            # floor on the schedule slope (normalised price units):
+                             # full sell -> full buy within ~4/BETA_MIN * A_scale ~ 48 USD
+CLEAR_ITERS = 30             # bisection halvings per side; float32 stalls after ~25-28
+CLEAR_TOL   = 1e-5           # tolerance (USD/tCO2) for "on floor / on ceiling / flat"
+SIGMA_S     = 0.05 * CAP_F_BASE * MEAN_MARKET_IMPACT   # net-supply scale, ~9.7 — TO CALIBRATE
+
+
+def supply_noise_base(key, T):
+    """Standard normal draws; scaled by SIGMA_S * sqrt(dt) in the clearing step."""
+    return jax.random.normal(key, (T,))
+
 
 def white_noise_A_base(key, T):
     return jax.random.normal(key, (T,)) * 0.25
@@ -119,7 +138,10 @@ FP_WINDOW = 200   # sliding window size for fictitious play mixture
 # holds allowances and switches green. Study range [0, 6].
 # Narrowed from -1.2 to -0.5: padding of 0.5 already makes 0 interior, while
 # -1.2 spent 14.3% of the prior (vs 6.5%) on a regime that is never studied.
-KAPPA_MIN = -0.5
+# market-clearing branch: [0.8, 7.2]. Below kappa = 1 buying allowances is
+# never optimal and the price should sit on the floor; starting at 0.8 keeps a
+# slice of that regime in the box so the conditioner learns the switch at 1.
+KAPPA_MIN =  0.8
 KAPPA_MAX =  7.2
 
 # ── init_alloc training range ─────────────────────────────────────────────────
