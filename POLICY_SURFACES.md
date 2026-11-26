@@ -126,8 +126,22 @@ mean of the per-market ratios). Use `on_floor` for the indicator, not a float
 comparison of `A` with `Afloor`. Guard the denominator (`max(·, 1e-12)`).
 
 Also report, for the text (not as a surface):
-- $P_{floor}(g) = \frac1S \sum_k \mathbb 1\{\exists t: A^{l,k}_t = A^{floor}\}$, averaged over seeds;
+- the **time spent on the floor**, the share of the year at which the floor binds,
+  $$
+  \tau^{l,k}_{floor}(g) = \frac1T\sum_{t=0}^{T-1}\mathbb 1\{A^{l,k}_t = A^{floor}\}
+  $$
+  (indicator = `on_floor`; one step is `365/T` days, so $\tau$ is also the
+  number of days on the floor divided by 365): its mean over markets and seeds,
+  and the 2.5 / 50 / 97.5 % quantiles over `k` of $\hat\tau^{\,k} = \frac1L\sum_l \tau^{l,k}$
+  (seeds averaged first, as in §5). It replaces the probability of hitting the
+  floor, which saturates at 0 or 1 over most of the grid and ignores how long
+  the floor binds;
 - the 2.5 / 50 / 97.5 % quantiles over `k` of the per-market $\mathcal V^{l,k}_{floor}$ (seeds averaged first).
+
+Note: on day 0 the price is the root closest to the floor (`sel = Afloor` at
+`t = 0` in `market_step`); `on_floor` is true only if the floor actually binds
+(excess supply at the floor), so day 0 is not counted on the floor by
+construction. Use `on_floor`, never `A == Afloor`.
 
 ### Fig. 3 — price distortion of the major, **version 1: blind major** (quick check)
 
@@ -262,7 +276,7 @@ Two aggregations, as in the paper (`subsec:seed-consistency`,
 3. `plot_policy_surfaces.py --surfaces <study>/surfaces`: computes the metrics and
    the aggregations of §5 from the npz, draws one surface per figure with the
    style of `plot_sensitivity_seeds.py` (`_surface`), and writes
-   `fig{1..4}.{pdf,png}` and `summary.json` (the text numbers: $P_{floor}$, the
+   `fig{1..4}.{pdf,png}` and `summary.json` (the text numbers: $\tau_{floor}$, the
    quantiles of $\mathcal V_{floor}$, $\Delta J^0$ at `CTX_REF`, the blind-major
    check of §4.1).
 
@@ -276,7 +290,8 @@ chunk the vmap (as `sim_many`, chunks of 100–500 markets).
   `plot_majmin_scenarios.py` up to Monte Carlo error.
 - Clearing quality at every grid point: `max |ys['resid']|` and
   `max |ys['cons_err']|` small; print the worst grid point.
-- $\mathcal V_{floor} = 0$ wherever `on_floor` is never true; $0 \le \mathcal V_{floor} \le 1$.
+- $\mathcal V_{floor} = 0$ wherever `on_floor` is never true; $0 \le \mathcal V_{floor} \le 1$;
+  $0 \le \tau_{floor} \le 1$, and $\tau_{floor} = 0 \Leftrightarrow \mathcal V_{floor} = 0$ market by market.
 - $\sigma_A$ finite everywhere.
 - The noise arrays are bitwise identical across grid points, seeds and the two
   markets of Fig. 3 (hash them once and assert).
