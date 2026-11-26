@@ -35,6 +35,7 @@ with open(os.path.join(args.run_dir, 'progress.json')) as f:
     prog = json.load(f)
 os.environ['KETS_FLOOR_MODE'] = prog['floor_mode']
 os.environ['KETS_N_SIM'] = str(prog['n_sim'])
+os.environ['KETS_USE_H'] = '1' if prog.get('public_history_input', True) else '0'   # older runs had it
 os.environ.setdefault('KETS_FLOOR_MAX', '30')
 
 import numpy as np
@@ -149,13 +150,13 @@ def run_scenario(name, g):
     lim = np.quantile(np.abs(gaps), 0.95) + 1e-9
     cmap = plt.get_cmap('coolwarm')
     sel = np.random.default_rng(0).choice(S, min(S, 600), replace=False)
-    t = np.arange(T + 1)
+    t = np.arange(T)                     # traded prices only: A_traj[1:] (A_traj[0] = pre-open reference)
     for i in sel:
-        ax.plot(t, A[i], color=cmap(0.5 + 0.5 * np.clip(gaps[i] / lim, -1, 1)), lw=0.35, alpha=0.6)
-    ax.fill_between(t, np.quantile(A, .1, axis=0), np.quantile(A, .9, axis=0), color='k', alpha=0.08, lw=0)
-    ax.plot(t, A.mean(axis=0), color='k', lw=2.0, label='mean')
+        ax.plot(t, A[i, 1:], color=cmap(0.5 + 0.5 * np.clip(gaps[i] / lim, -1, 1)), lw=0.35, alpha=0.6)
+    ax.fill_between(t, np.quantile(A[:, 1:], .1, axis=0), np.quantile(A[:, 1:], .9, axis=0), color='k', alpha=0.08, lw=0)
+    ax.plot(t, A[:, 1:].mean(axis=0), color='k', lw=2.0, label='mean')
     ax.axhline(float(g[2]), color='0.4', ls=':', lw=1); ax.axhline(A_CEIL_V2, color='0.4', ls='--', lw=1)
-    ax.set_xlim(0, T); ax.set_xlabel('Day $t$'); ax.set_ylabel('Cleared price (USD/tCO$_2$)')
+    ax.set_xlim(0, T - 1); ax.set_xlabel('Day $t$'); ax.set_ylabel('Cleared price (USD/tCO$_2$)')
     ax.set_title(f"{name}: $\\gamma$ = {tuple(round(x, 2) for x in g)}  —  {S} markets, mixture of {k}",
                  fontsize=10, loc='left')
     sm = ScalarMappable(cmap=cmap, norm=Normalize(-lim, lim))
@@ -206,19 +207,19 @@ def run_scenario(name, g):
     gs = GridSpec(5, 4, figure=fig, height_ratios=[0.8, 1, 1, 1, 1], width_ratios=[1, 1, 1, 0.045],
                   hspace=0.42, wspace=0.22)
     ax = fig.add_subplot(gs[0, :3])
-    ts = np.arange(T + 1)
+    ts = np.arange(T)                    # day t: traded price A_traj[t+1], observed good price P_traj[t]
     for uu in range(k):
-        ax.plot(ts, A_k[uu], color=TYPE_COLORS[MAJOR], lw=1.0, alpha=0.25)
-    ax.plot(ts, d['A'], color='#111111', lw=3.0, label=r'$A_t$ (major on component $u^\ast$)')
+        ax.plot(ts, A_k[uu][1:], color=TYPE_COLORS[MAJOR], lw=1.0, alpha=0.25)
+    ax.plot(ts, d['A'][1:], color='#111111', lw=3.0, label=r'$A_t$ (major on component $u^\ast$)')
     ax.plot([], [], color=TYPE_COLORS[MAJOR], lw=2, alpha=0.5, label=r'$A_t$ for every major component $u$')
-    ax.plot(ts, d['P'], color='#8a8983', lw=3.0, label=r'$P_t$')
+    ax.plot(ts, d['P'][:T], color='#8a8983', lw=3.0, label=r'$P_t$')
     ax.axhline(float(g[2]), color='#8a8983', lw=2.0, ls=(0, (6, 4)))
     ax.text(1.0, float(g[2]), 'floor', color='#8a8983', fontsize=F_TICK, ha='right', va='bottom',
             transform=ax.get_yaxis_transform())
     ax.legend(fontsize=F_LABEL - 4, frameon=False, loc='upper left')
     _style(ax, rf'Allowance price $A_t$ and good price $P_t$ — {name}, $\gamma$ = '
                f'{tuple(round(x, 2) for x in g)}', 'Price')
-    ax.set_xlim(0, T)
+    ax.set_xlim(0, T - 1)
     cgs = gs[1:, 3].subgridspec(N_TYPES, 1, hspace=0.35)
     for j in range(N_TYPES):
         cb = fig.colorbar(ScalarMappable(norm=Normalize(0, 1), cmap=type_cmap(TYPE_COLORS[j])),

@@ -31,6 +31,7 @@ import optax
 
 from envs.environment import N_TYPES
 from envs.environment_majmin import MINORS, MAJOR
+from envs.models_majmin import USE_H
 from envs.models_majmin import (minor_policy, major_policy, make_buffer, buffer_set,
                                 component, SchedulePolicy)
 from envs.params_v2 import K_MAX, FLOOR_MODE, SUPPLY_C, A_CEIL_V2
@@ -400,7 +401,7 @@ def fictitious_play_majmin(env, rung, ctx_ref, K=30, T=30, n=30, iters=8000, ite
                 'B': B, 'B0': B0, 'S': S, 'S_fixed': S_fixed, 'M': M, 'lr': lr, 'lr_min': lr_min,
                 'floor_mode': FLOOR_MODE, 'supply_c': SUPPLY_C, 'A_CEIL': A_CEIL_V2,
                 'N0': 1, 'major_type': MAJOR, 'minor_types': list(MINORS),
-                'major_gradient': 'myopic_ift', 'm0_ref': m0_ref, 's0': s0,
+                'major_gradient': 'myopic_ift', 'public_history_input': bool(USE_H), 'm0_ref': m0_ref, 's0': s0,
                 'type_shares': [float(x) for x in w_ref], **(meta or {}), 'records': records})
         if verbose:
             print(f"  checkpoint saved  [iteration {_hms(time.time() - ti)}]", flush=True)

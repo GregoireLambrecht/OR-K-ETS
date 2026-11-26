@@ -10,7 +10,8 @@ Players
            the clearing with weight 1.
 
 Clearing (§4): D(a) = f0(a) + sum_{j in {0,2}} w_j mean_i f_ji(a) - S_t, two
-bisections for [a-, a+], A_t = clip(A_pre, a-, a+); the long side is rationed
+bisections for [a-, a+], A_t = clip(A_pre, a-, a+) (day 0: A_0 = a-, the root
+closest to the floor; the pre-open A_REF only centres the schedules); the long side is rationed
 at a binding bound. A_t carries a custom JVP (implicit function theorem, §7):
   interior root : dA = -dD(A_t)/D'(A_t), D' guarded at -eps_D;
   bound binds   : dA = 0;   selection keeps A_pre in a flat interval : dA = dA_pre.
@@ -27,7 +28,7 @@ from jax import vmap
 
 from envs.environment_v2 import MarketClearingEnvV2, stratified_components
 from envs.params_v2 import A_REF, A_CEIL_V2, CLEAR_ITERS_V2, FLOOR_MODE
-from envs.models_majmin import gather_apply, H_DIM
+from envs.models_majmin import gather_apply, H_DIM, USE_H
 
 MINORS = (0, 2)
 MAJOR = 1
@@ -156,6 +157,10 @@ class MajorMinorEnv(MarketClearingEnvV2):
         return 1.0 - jnp.exp(-self.dt / EMA_TAU_DAYS)
 
     def net_input(self, x, H):
+        """Network input: normalised own state (private + public: t, A_pre, A_avg, P),
+        plus the public-history summary H only if KETS_USE_H=1."""
+        if not USE_H:
+            return self.normalize_state(x)
         return jnp.concatenate([self.normalize_state(x), H])
 
     def sched(self, x, out):
@@ -197,8 +202,13 @@ class MajorMinorEnv(MarketClearingEnvV2):
         fl = jnp.asarray(self.Afloor, jnp.float32)
         ce = jnp.asarray(A_CEIL_V2, jnp.float32)
         eps_d = self.eps_d()
-        A_t = clear_price(p0, pm, wm, S, apre, fl, ce, sc, eps_d)
-        info = clearing_info(p0, pm, wm, S, apre, fl, ce, sc, eps_d)
+        # selection point: the last traded price; on day 0 there is none (the
+        # pre-open A_REF only centres the schedules), so the price is settled by
+        # the clearing alone and, if the root set is an interval, its lowest
+        # point a- (the root closest to the floor) is taken
+        sel = jnp.where(t == 0, fl, apre)
+        A_t = clear_price(p0, pm, wm, S, sel, fl, ce, sc, eps_d)
+        info = clearing_info(p0, pm, wm, S, sel, fl, ce, sc, eps_d)
 
         # rationing (explicit in the orders at A_t)
         f0 = _order(A_t, p0, sc)
@@ -229,7 +239,8 @@ class MajorMinorEnv(MarketClearingEnvV2):
         # public history, for tomorrow
         lam = self.ema_rate()
         vol = rho_b * B
-        Hn = jnp.stack([(1 - lam) * H[0] + lam * (A_t - apre) / sc, rho_s,
+        dA = jnp.where(t == 0, 0.0, A_t - apre)          # no price change on day 0
+        Hn = jnp.stack([(1 - lam) * H[0] + lam * dA / sc, rho_s,
                         (1 - lam) * H[2] + lam * vol / self.cap_total()])
 
         S_exec = jnp.where(S > 0, rho_s * S, rho_b * S)

@@ -41,23 +41,23 @@ def main():
         suffix = ''
     recs = [r for r in recs if 'clearing' in r]
     T = len(recs[0]['clearing']['A_path_mean']) - 1
-    t = np.arange(T + 1)
+    t = np.arange(T)        # traded prices A_path[1:]; A_path[0] is the pre-open reference, not plotted
 
     fig, ax = ps.line_panel(ps.RUNTIME, dict(left=0.45, right=0.62, bottom=0.32, top=0.05))
     cmap = plt.get_cmap('viridis_r')
     norm = Normalize(1, max(r['iteration'] for r in recs))
     last = recs[-1]['clearing']
-    ax.fill_between(t, last['A_path_p10'], last['A_path_p90'],
+    ax.fill_between(t, last['A_path_p10'][1:], last['A_path_p90'][1:],
                     color=cmap(norm(recs[-1]['iteration'])), alpha=0.15, lw=0)
     for r in recs:
-        ax.plot(t, r['clearing']['A_path_mean'], color=cmap(norm(r['iteration'])),
+        ax.plot(t, r['clearing']['A_path_mean'][1:], color=cmap(norm(r['iteration'])),
                 marker='o', markevery=max(1, T // 10))
     if floor is not None:
         ax.axhline(floor, color='0.55', lw=0.8, ls=(0, (4, 2)))
         ax.text(1.0, floor, 'floor', color='0.55', fontsize=7, ha='right',
                 va='bottom', transform=ax.get_yaxis_transform())
-    ax.set_xlim(0, T)
-    ax.set_xlabel('Step $t$ (0 = pre-open price $A_{\\mathrm{ref}}$)')
+    ax.set_xlim(0, T - 1)
+    ax.set_xlabel('Day $t$')
     ax.set_ylabel('Mean cleared price (USD/tCO$_2$)')
     cax = fig.add_axes([1 - 0.55 / 3.1, 0.32 / 2.1, 0.04, 1 - 0.37 / 2.1])
     cb = fig.colorbar(ScalarMappable(norm=norm, cmap=cmap), cax=cax)

@@ -18,8 +18,14 @@ import equinox as eqx
 
 from envs.models import FiLMLayer, STATE_DIM_DYNAMIC
 
-H_DIM = 3                          # (EMA price change, last sellers' fill ratio, EMA volume)
-IN_DIM = STATE_DIM_DYNAMIC + H_DIM
+import os
+
+# Public-history summary H_t (EMA price change, last sellers' fill ratio, EMA
+# volume) as a network input: OFF by default = Markovian policies on the private
+# + public state only. KETS_USE_H=1 restores it (runs before 2026-11-25 used it).
+USE_H = os.environ.get('KETS_USE_H', '0') == '1'
+H_DIM = 3                          # H_t is always computed (diagnostics, frozen paths)
+IN_DIM = STATE_DIM_DYNAMIC + (H_DIM if USE_H else 0)
 CTX_DIM = 4
 BETA_MIN_MINOR = 0.1
 BETA_MIN_MAJOR = 0.0
