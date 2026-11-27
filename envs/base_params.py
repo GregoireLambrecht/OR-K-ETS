@@ -141,16 +141,17 @@ FP_WINDOW = 200   # sliding window size for fictitious play mixture
 # market-clearing branch: [0.8, 7.2]. Below kappa = 1 buying allowances is
 # never optimal and the price should sit on the floor; starting at 0.8 keeps a
 # slice of that regime in the box so the conditioner learns the switch at 1.
-KAPPA_MIN =  0.8
-KAPPA_MAX =  7.2
+# Overridable per run (KETS_KAPPA_MIN/MAX, read once at import, like KETS_FLOOR_MAX).
+KAPPA_MIN = float(os.environ.get('KETS_KAPPA_MIN', 0.8))
+KAPPA_MAX = float(os.environ.get('KETS_KAPPA_MAX', 7.2))
 
 # ── init_alloc training range ─────────────────────────────────────────────────
 # D6: must NOT go below 0. theta_0 = 34*T*init_alloc for type 1 (238*T for
 # type 2), so init_alloc < -2.75/T makes theta_0 < -cap_f and the admissible
 # set [-min(theta, cap_f), cap_f] EMPTY. Unlike kappa < 0, which is a padded
 # regime, init_alloc < 0 is an undefined one.
-ALLOC_MIN = 0.0
-ALLOC_MAX = 1.2
+ALLOC_MIN = float(os.environ.get('KETS_ALLOC_MIN', 0.0))
+ALLOC_MAX = float(os.environ.get('KETS_ALLOC_MAX', 1.2))
 
 # ── Afloor training range ─────────────────────────────────────────────────────
 # The price floor is a regulatory instrument, so it joins the context. The lower
@@ -158,7 +159,7 @@ ALLOC_MAX = 1.2
 # at t=0 and the market is free to fall, which is the status quo. The upper end
 # is the experiment — the study widens it in stages (20, then 30, then 40) and
 # keeps the widest range whose exploitability still converges.
-FLOOR_MIN = 6.0
+FLOOR_MIN = float(os.environ.get('KETS_FLOOR_MIN', 6.0))
 # Set once, at import, from KETS_FLOOR_MAX. It must NOT be patched after import:
 # `utils._G_HI` (the FiLM normaliser) and FIXED_SCENARIOS['floor_hi'] both
 # capture it at import time, while environment.generate_context reads it at call
@@ -170,8 +171,8 @@ FLOOR_MAX = float(os.environ.get('KETS_FLOOR_MAX', 20.0))
 # Enters the market as an aggregation WEIGHT, not as a population size — see
 # ExogenousMarketEnvJAX.context_weights. Capped at half the block: past that the
 # producers it is supposed to intermediate for stop being the market.
-MM_MIN = 0.0
-MM_MAX = 0.5
+MM_MIN = float(os.environ.get('KETS_MM_MIN', 0.0))
+MM_MAX = float(os.environ.get('KETS_MM_MAX', 0.5))
 
 # ═════════════════════════════════════════════════════════════════════════════
 # Rung 1 configuration  (see plan.md §6)

@@ -122,7 +122,8 @@ os.makedirs(args.model_dir, exist_ok=True)
 mm_path = fit_mm_warmstart(os.path.join(args.model_dir, 'fi_warmstart.eqx'), args.mm_steps)
 print("=" * 76)
 print(f"MAJOR-MINOR market clearing | rung {args.rung} | ref {CTX_REF} | seed {args.seed} | "
-      f"floor max {FLOOR_MAX} | kappa box [{KAPPA_MIN}, {KAPPA_MAX}]")
+      f"box: alloc [{ALLOC_MIN}, {ALLOC_MAX}] kappa [{KAPPA_MIN}, {KAPPA_MAX}] "
+      f"floor [{FLOOR_MIN}, {FLOOR_MAX}] mm [{MM_MIN}, {MM_MAX}]")
 print(f"save -> {args.model_dir}   JAX devices: {jax.devices()}")
 print("=" * 76, flush=True)
 (fictitious_play_majmin_fast if args.fast else fictitious_play_majmin)(
@@ -134,5 +135,7 @@ print("=" * 76, flush=True)
             lr_warm=args.lr_warm, bank_chunk=args.bank_chunk,
             warm_from=(10 ** 9 if args.fresh_br else 2))
        if args.fast else {}),
-    meta={'seed': args.seed, 'solver': f'majmin_rung{args.rung}'})
+    meta={'seed': args.seed, 'solver': f'majmin_rung{args.rung}', 'floor_max': FLOOR_MAX,
+          'gamma_box': {'init_alloc': [ALLOC_MIN, ALLOC_MAX], 'kappa': [KAPPA_MIN, KAPPA_MAX],
+                        'Afloor': [FLOOR_MIN, FLOOR_MAX], 'mm_share': [MM_MIN, MM_MAX]}})
 print("\nDone.", flush=True)

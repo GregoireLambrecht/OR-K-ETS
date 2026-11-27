@@ -150,6 +150,27 @@ def test_5_minor_rollout():
     assert R.shape == (4,) and np.isfinite(np.asarray(R)).all()
 
 
+def test_6_major_rollout_reproduces_cleared_reward():
+    """POLICY_SURFACES.md §4.1: the major's price-taking rollout of component u on the
+    paths of a market cleared with component u returns that market's r0."""
+    n, k = 6, 3
+    bufs, stats, pols = _mix(k)
+    mb, ms = tuple(bufs[j] for j in MINORS), tuple(stats[j] for j in MINORS)
+    kP, kE, kI, kC = jax.random.split(jax.random.PRNGKey(11), 4)
+    P = env.generate_P(kP, T)
+    eps0 = env.generate_eps0(kE, T) * 3
+    imin = tuple(jax.vmap(env.generate_idiosyncratic_noise, in_axes=(0, None, None))(
+        jax.random.split(jax.random.fold_in(kI, j), n), env.agent_params[j, 7], T) for j in MINORS)
+    imaj = env.generate_idiosyncratic_noise(jax.random.fold_in(kI, 99), env.agent_params[MAJOR, 7], T) \
+        * env.major_mass()
+    for u in range(k):
+        maj = pols[u][MAJOR]
+        A, rho, H, r0, ys, _ = env.simulate(lambda x, c: maj(x, c), mb, ms, jnp.int32(k), kC,
+                                            norm_gamma(G), P, eps0, imin, imaj)
+        R = env.rollout_major(maj, A, rho, H, P, imaj, norm_gamma(G))
+        assert abs(float(R) - float(r0)) <= 1e-4 * max(1.0, abs(float(r0))), (u, float(R), float(r0))
+
+
 if __name__ == '__main__':
     tests = [v for kk, v in sorted(globals().items()) if kk.startswith('test_')]
     for t in tests:

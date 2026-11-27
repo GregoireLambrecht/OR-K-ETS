@@ -252,7 +252,7 @@ class MajorMinorEnv(MarketClearingEnvV2):
         y = {
             'A': A_t, 'rho': jnp.stack([rho_s, rho_b]), 'H': H,
             'on_floor': fb, 'on_ceil': cb, 'flat': (info['a_plus'] - info['a_minus']) > FLAT_TOL,
-            'G': G, 'S': S, 'S_exec': S_exec, 'cons_err': dth - (S_exec - G_gov),
+            'G': G, 'B': B, 'O': O, 'S': S, 'S_exec': S_exec, 'cons_err': dth - (S_exec - G_gov),
             'resid': jnp.where(fb | cb, 0.0, jnp.abs(D_At)),
             'impact': info['impact'], 'moving': info['moving'], 'guard': info['guard'],
             'X0': X0, 'a0': a0,
@@ -325,3 +325,25 @@ class MajorMinorEnv(MarketClearingEnvV2):
 
         (Xf, cum), _ = jax.lax.scan(step, (X0, jnp.zeros(B)), jnp.arange(T_int))
         return cum + vmap(self.terminal_reward)(Xf)
+
+    # ── the major as a price taker against frozen public paths ───────────────
+
+    def rollout_major(self, policy, A_traj, rho_traj, H_traj, P_traj, idio_maj, ctx):
+        """The aggregate major (state x m0) price-taking against frozen (A, rho, H),
+        mirroring rollout_minor for one player (POLICY_SURFACES.md §4.1).
+        idio_maj (T,) in aggregate units (raw x m0). Returns the total reward (scalar)."""
+        T_int = int(self.T)
+        X0 = self.major_initial_state()
+
+        def step(carry, t):
+            X, cum = carry
+            A_exec, rho = A_traj[t + 1], rho_traj[t + 1]
+            out = policy(self.net_input(X, H_traj[t]), ctx)
+            a = self.act_at(X, out, A_exec)
+            a = a.at[0].set(jnp.where(a[0] >= 0, rho[1] * a[0], rho[0] * a[0]))
+            cum = cum + self.running_reward(X, a, A_exec)
+            Xn = self.single_step_dynamics(X, a, idio_maj[t], A_exec, P_traj[t + 1])
+            return (Xn, cum), None
+
+        (Xf, cum), _ = jax.lax.scan(step, (X0, jnp.float32(0.0)), jnp.arange(T_int))
+        return cum + self.terminal_reward(Xf)
