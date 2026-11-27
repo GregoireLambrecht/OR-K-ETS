@@ -1,0 +1,233 @@
+% !TEX root = ./main-benchmark.tex
+%  Exact benchmark B0 (task T4 of REVISION_PLAN_OR.md): the deterministic
+%  competitive market and its planner LP.  Draft, not yet \input in content.tex;
+%  compile main-benchmark.tex to see it on its own.
+%  Placement:
+%   - the subsection: at the end of Section 2 (after the scenario-extended
+%     game), or as the first part of the validation subsection 5.3;
+%   - the appendix: after app:clearing.
+
+    \subsection{An Exact Benchmark: the Deterministic Competitive Market}
+    \label{sec:benchmark_lp}
+
+    The exploitability estimates of Section~\ref{sec:exploitability_monitoring} are lower bounds. To measure the error of the computed equilibrium itself, we single out a special case of the model in which the equilibrium is known exactly: there are no majors and no noise, the penalty is a fixed fine, and neither the price corridor nor the trading limits bind. The market is then the deterministic competitive economy of \citet{montgomery_markets_1972}. Its equilibrium is the solution of a linear program: the problem of a planner who allocates the production of every type to its technologies under the cap, the allowance price being the dual variable of the cap.
+
+    \begin{assumption}[Deterministic competitive market]
+        \label{ass:benchmark}
+        \leavevmode
+        \begin{enumerate}
+            \item \emph{No majors:} $M^0 = 0$, so that $\fL = [M]$. Without loss of generality, $\fn_j > 0$ and $C^{\xi,j} > 0$ for every $j \in [M]$.
+            \item \emph{No noise:} the initial good prices are deterministic and $\phi_t$ does not depend on its noise argument, so that the good prices $P^j_t = p^j_t$ are deterministic; the exogenous supply $S_t = s_t \ge 0$ is deterministic; the uncontrolled emissions are deterministic, $\nu^j = \delta_{\varepsilon^j}$ with $\varepsilon^j \ge 0$; the allocations are deterministic, $\Lambda^j = \delta_{\theta^j}$, with $\Theta_0 \coloneqq \sum_{j \in [M]} \fn_j \theta^j > 0$. We denote by $\Theta \coloneqq \Theta_0 + \sum_{t=0}^{T-1} s_t$ the total stock of allowances.
+            \item \emph{Fixed penalty:} $\kappa^1 > 0$ and $\kappa^2 = 0$, so that $\kappa \equiv \kappa^1$.
+            \item \emph{Non-binding corridor:} $A^{\mathrm{floor}} = 0$ and $A^{\mathrm{ceil}} > \kappa^1$.
+            \item \emph{Large trading limits:} $C^{f,j} > \bar C^{f,j} \coloneqq \max\big(\theta^j,\ \Theta + T(C^{\xi,j} \max_{k \in [m_j]} e^{j,k} + \varepsilon^j)\big)$ for every $j \in [M]$.
+        \end{enumerate}
+    \end{assumption}
+
+    Under Assumption~\ref{ass:benchmark}, the common information $\cF^0_t$ is trivial, so that the allowance prices $A_t$ and the fill ratios $\rho_t$ of a generated market are deterministic numbers, and so is the trajectory of an agent of type $j$ following a pure control. Since $\kappa^2 = 0$, the reference price plays no role.
+
+    \paragraph{The planner's problem} The production enters the reward and the emissions only through the production per technology, which we denote by $q^{j,k}_t \coloneqq \xi^j_t \eta^{j,k}_t$ for an agent of type $j$, technology $k \in [m_j]$ and day $t$. The map $(\xi, \eta) \mapsto \xi\eta$ sends $[0, C^{\xi,j}] \times \Delta_{[m_j]}$ onto
+    $$
+        \cQ^j \coloneqq \Big\{ q \in \RR_+^{m_j} : \sum_{k \in [m_j]} q^k \le C^{\xi,j} \Big\}.
+    $$
+    Once the uncontrolled emissions are covered, the stock left for the controlled emissions is $\Theta^{\mathrm c} \coloneqq \Theta - T \sum_{j \in [M]} \fn_j \varepsilon^j$, which may be negative. The planner's linear program is
+    \begin{equation}
+        \label{eq:lp_primal}
+        \tag{P}
+        \begin{aligned}
+            \max_{q \ge 0,\ \sigma \ge 0} \quad & \sum_{j \in [M]} \fn_j \sum_{t=0}^{T-1} \sum_{k \in [m_j]} (p^j_t - c^{j,k})\, q^{j,k}_t - \kappa^1 \sigma \\
+            \text{s.t.} \quad & \sum_{j \in [M]} \fn_j \sum_{t=0}^{T-1} \sum_{k \in [m_j]} e^{j,k} q^{j,k}_t \le \Theta^{\mathrm c} + \sigma, \\
+            & \sum_{k \in [m_j]} q^{j,k}_t \le C^{\xi,j}, \qquad j \in [M],\ t \in \{0, \dots, T-1\},
+        \end{aligned}
+    \end{equation}
+    where $q^{j}_t = (q^{j,k}_t)_{k \in [m_j]}$ is the production of every agent of type $j$ on day $t$, and $\sigma$ is the shortfall of the population: the planner may exceed the stock, at the cost $\kappa^1$ per missing allowance. Attaching the multiplier $a$ to the cap and $\fn_j \lambda^j_t$ to the capacity of type $j$ on day $t$, its dual is
+    \begin{equation}
+        \label{eq:lp_dual}
+        \tag{D}
+        \min_{a \in [0, \kappa^1],\ \lambda \ge 0} \quad a\, \Theta^{\mathrm c} + \sum_{j \in [M]} \fn_j C^{\xi,j} \sum_{t=0}^{T-1} \lambda^j_t
+        \qquad \text{s.t.} \quad \lambda^j_t \ge p^j_t - c^{j,k} - a\, e^{j,k}, \quad j \in [M],\ k \in [m_j],\ t \in \{0, \dots, T-1\},
+    \end{equation}
+    the bound $a \le \kappa^1$ being the dual constraint of the shortfall $\sigma$. For a price $a \ge 0$ of the emitted units, we call
+    $$
+        \mu^{j,k}_t(a) \coloneqq p^j_t - c^{j,k} - a\, e^{j,k}, \qquad \bar\mu^j_t(a) \coloneqq \max\Big(0,\ \max_{k \in [m_j]} \mu^{j,k}_t(a)\Big),
+    $$
+    the margin of the technology $k$ of type $j$ on day $t$, and the rent of a unit of capacity of type $j$ on day $t$. For a fixed $a$, the smallest feasible $\lambda$ in~\eqref{eq:lp_dual} is $\bar\mu(a)$, so the dual reduces to the one-dimensional convex problem
+    \begin{equation}
+        \label{eq:lp_phi}
+        \min_{a \in [0, \kappa^1]} \Phi(a), \qquad \Phi(a) \coloneqq a\, \Theta^{\mathrm c} + \sum_{j \in [M]} \fn_j C^{\xi,j} \sum_{t=0}^{T-1} \bar\mu^j_t(a),
+    \end{equation}
+    whose set of solutions we denote by $\cI^\star$. Finally, the \emph{merit order} of type $j$ on day $t$ at the price $a$ is the set of productions that maximize the margin,
+    $$
+        \cQ^j_t(a) \coloneqq \argmax_{q \in \cQ^j} \sum_{k \in [m_j]} \mu^{j,k}_t(a)\, q^k = \Big\{ q \in \cQ^j : q^k = 0 \text{ if } \mu^{j,k}_t(a) < \bar\mu^j_t(a), \ \text{and} \ \sum_{k} q^k = C^{\xi,j} \text{ if } \bar\mu^j_t(a) > 0 \Big\}:
+    $$
+    the capacity is used in full, with the technologies of largest margin, if that margin is positive, and nothing is produced if every margin is negative. For a profile of randomized controls $\Sigma$ and a component $u \in \Upsilon^j$, we denote by $(\theta^{j,u}_t, \bar\xi^{j,u}_t)_t$ and $(f^{j,u}_t, \xi^{j,u}_t, \eta^{j,u}_t)_t$ the (deterministic) private states and orders of an agent of type $j$ following $\bar\pi^{j,u}$ in the market generated by $\Sigma$. We say that the trading limits do not bind in $\Sigma$ if, for every $j \in [M]$ and $\sigma^j$-almost every $u$, $|f^{j,u}_t| < C^{f,j}$ for every $t \in \{0, \dots, T-1\}$. Orders of the form~\eqref{eq:schedule} satisfy this by construction.
+
+    \begin{theorem}[Exact benchmark]
+        \label{thm:benchmark_lp}
+        Let Assumption~\ref{ass:benchmark} hold, and let $\gamma$ be the corresponding scenario. The set $\cI^\star$ is a nonempty closed interval of $[0, \kappa^1]$, and $a \in \cI^\star$ if and only if $(a, \bar\mu(a))$ solves~\eqref{eq:lp_dual}.
+        \begin{enumerate}
+            \item[(i)] \emph{Existence.} Let $a^\star \in \cI^\star$ and $(q^\star, \sigma^\star)$ be a solution of~\eqref{eq:lp_primal}. There exists a population Nash equilibrium, with pure controls, in which $A_t = a^\star$ for every $t \in \{0, \dots, T-1\}$, every agent of type $j$ produces $q^{j,\star}_t$ on day $t$, every order is fully executed, and the trading limits do not bind.
+            \item[(ii)] \emph{Characterization.} Let $\Sigma$ be a population Nash equilibrium in the scenario $\gamma$ in which the trading limits do not bind. Then:
+            \begin{enumerate}
+                \item the allowance price is constant, $A_t = a$ for every $t \in \{0, \dots, T-1\}$, with $a \in \cI^\star$;
+                \item the mean production and the aggregate shortfall,
+                $$
+                    \bar q^{j,k}_t \coloneqq \int \xi^{j,u}_t \eta^{j,u,k}_t \, \sigma^j(\diff u), \qquad \bar\sigma \coloneqq \sum_{j \in [M]} \fn_j \int \big(e^j \cdot \bar\xi^{j,u}_T + T\varepsilon^j - \theta^{j,u}_T\big)^+ \sigma^j(\diff u),
+                $$
+                solve~\eqref{eq:lp_primal};
+                \item the average reward of type $j$ is
+                \begin{equation}
+                    \label{eq:benchmark_value}
+                    J^j(\Sigma; \gamma) = V^j_\star(a) \coloneqq a\, \theta^j + C^{\xi,j} \sum_{t=0}^{T-1} \bar\mu^j_t(a) - a\, T \varepsilon^j;
+                \end{equation}
+                \item the aggregate emissions $E \coloneqq \sum_{j} \fn_j \int (e^j \cdot \bar\xi^{j,u}_T + T\varepsilon^j)\, \sigma^j(\diff u)$ satisfy $E = \Theta$ if $0 < a < \kappa^1$, $E \le \Theta$ if $a = 0$, and $E = \Theta + \bar\sigma \ge \Theta$ if $a = \kappa^1$; and the total reward is $\sum_{j} \fn_j J^j(\Sigma; \gamma) = \Phi(a) - a \sum_{t} s_t$, where $\Phi(a) = \min \Phi$ is the value of~\eqref{eq:lp_primal}.
+            \end{enumerate}
+        \end{enumerate}
+    \end{theorem}
+
+    The proof is given in \appref{app:benchmark_lp}. The competitive market is efficient: the production of the population solves the planner's problem, and the allowance price is the shadow price of the cap. It is constant over the period: with no noise and no limit on trading, a price that rises from one day to the next offers an arbitrage to every agent, and a price that falls offers one to every agent that holds allowances, which is the case of a positive mass of them. It also lies in $[0, \kappa^1]$: since paying the fine discharges the obligation ($\kappa^2 = 0$), no participant buys above $\kappa^1$, and the fixed fine acts as a price ceiling. The three cases of~(d) are the three regimes of the market: the cap does not bind and the price is zero; the cap binds exactly; or the population emits beyond the stock, the price is the fine, and the shortfall $\bar\sigma$ is fined.
+
+    \paragraph{Merit order and computation of the price} The function $\Phi$ is convex and piecewise affine. Its kinks are the prices at which the ranking of the margins changes in some cell $(j,t)$: the switching price $(c^{j,k'} - c^{j,k})/(e^{j,k} - e^{j,k'})$ from a technology $k$ to a cleaner one $k'$, which does not depend on $t$, and the shutdown price $(p^j_t - c^{j,k})/e^{j,k}$ of the technology $k$. We denote by $\fB$ the set of the prices $a \in [0, \kappa^1]$ at which, in some cell $(j,t)$, the maximum of $0$ and of the margins $\mu^{j,k}_t(a)$, $k \in [m_j]$, is attained twice. It is finite as soon as, in every cell, these $m_j + 1$ affine functions of $a$ are pairwise distinct. Off $\fB$, the merit order $\cQ^j_t(a)$ is a single production in every cell, and the controlled emissions of the merit order,
+    $$
+        e^{\mathrm{mo}}(a) \coloneqq \sum_{j \in [M]} \fn_j \sum_{t=0}^{T-1} \sum_{k \in [m_j]} e^{j,k} q^{j,k}_t, \qquad q^j_t \in \cQ^j_t(a),
+    $$
+    form a nonincreasing step function of $a$, with $\Phi'(a) = \Theta^{\mathrm c} - e^{\mathrm{mo}}(a)$. The smallest element of $\cI^\star$ is therefore the smallest $a \in [0, \kappa^1)$ such that $e^{\mathrm{mo}} \le \Theta^{\mathrm c}$ on a right neighbourhood of $a$, and $\kappa^1$ if there is none: the price at which the merit order brings the emissions down to the stock. It is computed exactly by evaluating $\Phi$ on the finite set $\fB \cup \{0, \kappa^1\}$, or by any linear programming solver, as the dual variable of the cap in~\eqref{eq:lp_primal}.
+
+    \begin{corollary}[Uniqueness]
+        \label{cor:benchmark_unique}
+        Let Assumption~\ref{ass:benchmark} hold, with $\fB$ finite. Then $\cI^\star = \{a^\star\}$ is a singleton, unless $\Theta^{\mathrm c}$ belongs to the finite set $e^{\mathrm{mo}}\big((0, \kappa^1) \setminus \fB\big)$. When $\cI^\star = \{a^\star\}$, all the population Nash equilibria in which the trading limits do not bind have the same constant price $a^\star$, the same average rewards $V^j_\star(a^\star)$ and the same total reward; they have the same production in every cell $(j,t)$ in which the margins have no tie at $a^\star$; and they have the same aggregate emissions, $E = \Theta$ if $a^\star \in (0, \kappa^1)$, and $E = e^{\mathrm{mo}}(a^\star) + T \sum_j \fn_j \varepsilon^j$ if $a^\star \in \{0, \kappa^1\} \setminus \fB$.
+    \end{corollary}
+
+    When $a^\star \in (0, \kappa^1)$ is unique, it is a kink of $\Phi$: some cells are \emph{marginal}, with a tie between two technologies, or between producing and not producing, and only the total emissions of the marginal cells are determined, by $E = \Theta$. If the good prices do not depend on $t$, the $T$ days of a marginal type are tied together, and the split of its emissions across days is not determined either. The computed profile is therefore compared with the benchmark on the quantities that Theorem~\ref{thm:benchmark_lp} determines: the price path, which must be flat at $a^\star$; the average reward $J^j$ of every type, against $V^j_\star(a^\star)$; the aggregate emissions, against $\Theta$; and the technology mix of the cells that are not marginal, together with the total emissions of the marginal ones.
+
+    \begin{remark}[Allocation invariance]
+        \label{rem:allocation_invariance}
+        The allocations $(\theta^j)_{j \in [M]}$ enter~\eqref{eq:lp_primal} and~\eqref{eq:lp_phi} only through the stock $\Theta$. Reshuffling them across the types at a fixed $\Theta_0$ changes neither the price, nor the production, nor the emissions, and only changes the rewards~\eqref{eq:benchmark_value} by the transfer $a^\star \theta^j$: this is the independence of the efficient outcome from the initial allocation \citep{montgomery_markets_1972, hahn_effect_2011}.
+    \end{remark}
+
+    \begin{remark}[Exact exploitability]
+        \label{rem:exact_exploitability}
+        Theorem~\ref{thm:benchmark_lp} characterizes the exact equilibria. Under Assumption~\ref{ass:benchmark}, the exploitability of a computed profile is also available exactly, and not only as a lower bound. Let $(A^K_t, \rho^K_t)_t$ be the deterministic prices and fill ratios of the market generated by $\Sigma_{K,\gamma} = \tilde\Sigma_K(\gamma)$. Along a deterministic path, every sequence of admissible actions is generated by a pure control (Lemma~\ref{lem:benchmark_deterministic}), and as the order $f$ ranges over $[-\min(\theta, C^{f,j}), C^{f,j}]$, the executed trade $\hat f = \rho^+ f^+ - \rho^- f^-$ ranges over $[-\rho^- \min(\theta, C^{f,j}), \rho^+ C^{f,j}]$. The value of the best response of type $j$ to $\Sigma_{K,\gamma}$ is therefore the value of the linear program
+        $$
+        \begin{aligned}
+            \max \quad & \sum_{t=0}^{T-1} \Big( - A^K_t \hat f_t + \sum_{k \in [m_j]} (p^j_t - c^{j,k})\, q^k_t \Big) - \kappa^1 \varsigma \\
+            \text{s.t.} \quad & q_t \in \cQ^j, \quad \theta_0 = \theta^j, \quad \theta_{t+1} = \theta_t + \hat f_t, \quad \hat f_t \ge -\rho^{K,-}_t \theta_t, \quad -\rho^{K,-}_t C^{f,j} \le \hat f_t \le \rho^{K,+}_t C^{f,j}, \\
+            & \varsigma \ge 0, \quad \varsigma \ge \sum_{t=0}^{T-1} \sum_{k \in [m_j]} e^{j,k} q^k_t + T\varepsilon^j - \theta_T,
+        \end{aligned}
+        $$
+        over $(q_t, \hat f_t)_t$, $(\theta_t)_t$ and $\varsigma$, and the exploitability $\cE^j(\Sigma_{K,\gamma}; \gamma)$ of~\eqref{eq:expl_fixed} is this value minus $J^j(\Sigma_{K,\gamma}; \gamma)$. The latter is computed by simulation, exactly up to the particle approximation of the mixture, which disappears if the components are assigned to the particles of each type in equal numbers.
+    \end{remark}
+
+    \paragraph{Validation protocol} Theorem~\ref{thm:benchmark_lp} and Remark~\ref{rem:exact_exploitability} give two exact diagnostics of a computed profile $\tilde\Sigma_K$: how far it is from being an equilibrium, measured by its exact exploitability, and how far it is from the equilibrium it should approach, measured by the errors against the planner's problem. They are computed as follows.
+    \begin{enumerate}
+        \item \emph{Prior.} The scenario extended game is solved with a prior $Q$ supported on scenarios that satisfy Assumption~\ref{ass:benchmark}, for instance on a slice $\Gamma$ of total allocation $\Theta_0$ and fine $\kappa^1$, all the other parameters being fixed. A single run of Algorithm~\ref{algo:multi-type-fp} gives $\tilde\Sigma_K$.
+
+        \item \emph{One market per scenario.} For a scenario $\gamma \in \supp Q$, the market generated by $\Sigma_{K,\gamma} = \tilde\Sigma_K(\gamma)$ is deterministic (Lemma~\ref{lem:benchmark_deterministic}), and all the agents of type $j$ that follow the same component have the same trajectory. One simulation, with one agent per type $j$ and component $u \in \Upsilon_K$, of weight $\fn_j / (K+1)$ in the aggregate order, therefore gives the prices and fill ratios $(A^K_t, \rho^K_t)_t$, cleared by the bisection of Section~\ref{sec:market_sim}, and the average rewards $J^j(\Sigma_{K,\gamma}; \gamma)$ without any sampling error.
+
+        \item \emph{Exact exploitability.} For every type $j$, the linear program of Remark~\ref{rem:exact_exploitability}, written with $(A^K_t, \rho^K_t)_t$ and with the trading limits $C^{f,j}$ used in the computation, gives $\cE^j(\Sigma_{K,\gamma}; \gamma)$. It is reported relative to the scale~\eqref{eq:type_scale}, by type and for the population, $\sum_j \fn_j \cE^j(\Sigma_{K,\gamma}; \gamma) / s_j$.
+
+        \item \emph{Average over the prior.} The best response value of Remark~\ref{rem:exact_exploitability} is attained by a solution of the linear program that can be chosen measurably in $\gamma$, which defines a scenario extended deviation. The extended exploitability is therefore the average of the exploitabilities at fixed scenarios,
+        \begin{equation}
+            \label{eq:benchmark_extended_expl}
+            \tilde\cE^j(\tilde\Sigma_K; Q) = \int_\Gamma \cE^j\big(\tilde\Sigma_K(\gamma); \gamma\big)\, Q(\diff\gamma),
+        \end{equation}
+        which is the identity of the remark of Section~\ref{sec:exploitability_monitoring} for the class of all controls. It is estimated by $\frac{1}{B} \sum_{b=1}^B \cE^j(\Sigma_{K,\gamma_b}; \gamma_b)$, with $\gamma_b$ i.i.d.\ with law $Q$, or by a quadrature on a grid of $\Gamma$. Since an equilibrium is only obtained for $Q$-almost every scenario, the average is reported together with the map $\gamma \mapsto \cE^j(\Sigma_{K,\gamma}; \gamma)$ over $\Gamma$ and its maximum, including near the boundary of $\supp Q$.
+
+        \item \emph{Tightness of the lower bounds.} At the same scenarios, the specialist and generalist estimates of Section~\ref{sec:exploitability_monitoring} are lower bounds of $\cE^j(\Sigma_{K,\gamma}; \gamma)$ and of~\eqref{eq:benchmark_extended_expl}. The gap between an estimate and the exact value is what the estimate misses, because of the parametric class of the deviation and of its training.
+
+        \item \emph{Distance to the exact equilibrium.} For every $\gamma$, the price $a^\star(\gamma)$ is computed from~\eqref{eq:lp_phi}, and the computed profile is compared with Theorem~\ref{thm:benchmark_lp} on the quantities it determines (Corollary~\ref{cor:benchmark_unique}): the price path, through $\max_t |A^K_t - a^\star(\gamma)|$, which must vanish; the average rewards, through $|J^j(\Sigma_{K,\gamma}; \gamma) - V^j_\star(a^\star(\gamma))| / s_j$; the aggregate emissions, against $\Theta$; and the technology mix of the cells that are not marginal. These errors are reported relative to $a^\star(\gamma)$, or to $\kappa^1$ when $a^\star(\gamma) = 0$, and to the scale $s_j$.
+    \end{enumerate}
+    The two diagnostics should agree. A profile with a small exact exploitability but a large error against the planner's problem points to an error in the simulation of the market, unless $\cI^\star$ is not a singleton at that scenario.
+
+
+
+%  ---------------------------------------------------------------------------
+%  Appendix
+%  ---------------------------------------------------------------------------
+
+\ifdefined\benchmarkstandalone\appendix\fi  % the paper has its own \appendix
+\section{Proof of the Exact Benchmark}
+\label{app:benchmark_lp}
+
+    Throughout this appendix, Assumption~\ref{ass:benchmark} holds. For a profile of randomized controls $\Sigma$, we denote by $H_t \coloneqq \sum_{j \in [M]} \fn_j \int \theta^{j,u}_t \, \sigma^j(\diff u)$ the aggregate holdings of the population at time $t$, and, for an agent of type $j$ with production $q_t = \xi_t \eta_t$, by $E_T \coloneqq \sum_{t=0}^{T-1} \sum_{k \in [m_j]} e^{j,k} q^k_t + T \varepsilon^j = e^j \cdot \bar\xi_T + \bar\varepsilon_T$ its terminal emissions, and by $E^{j,u}_T$ those of the component $u$ of type $j$. Note that $0 \le E_T \le T(C^{\xi,j} \max_k e^{j,k} + \varepsilon^j)$.
+
+    \begin{lemma}[Deterministic market]
+        \label{lem:benchmark_deterministic}
+        Let $\Sigma$ be a profile of randomized controls.
+        \begin{enumerate}
+            \item The prices $A_t$ and the fill ratios $\rho_t$ of the market generated by $\Sigma$ are deterministic. Along this market, the trajectory of an agent of type $j$ following a pure control is deterministic, and conversely every sequence of actions that is admissible along a deterministic trajectory is generated by a pure control. If $\Sigma$ is a population Nash equilibrium, then, for every $j$ and $\sigma^j$-almost every $u$, $\bar\pi^{j,u}$ is a best response, that is, its sequence of actions maximizes the total reward among the admissible sequences.
+            \item On every day $t$, the executed trade $\rho^+_t f^+ - \rho^-_t f^-$ is a continuous nondecreasing function of the order $f$. If the ceiling does not bind on day $t$, then $\rho^+_t = 1$, and if the floor does not bind on day $t$, then $\rho^-_t = 1$.
+            \item $H_{t+1} = H_t + \rho^-_t s_t$ for every $t$, so that $\Theta_0 \le H_t \le \Theta$, and $H_t = \Theta_0 + \sum_{v < t} s_v$ if the floor does not bind before $t$.
+        \end{enumerate}
+    \end{lemma}
+
+    \begin{proof}
+        1. Since $M^0 = 0$ and all the noises are deterministic, $\cF^0_t$ is trivial, and the $\cF^0_t$-measurable variables $A_t$ and $\rho_t$ are almost surely constant. The initial state and the noise of an agent of type $j$ are deterministic, hence so is its trajectory under a pure control. Given a sequence of actions $(\alpha_t)_t$ admissible along a deterministic trajectory $(y_t, z_t)_t$, the control equal to $\alpha_t$ at $(y_t, z_t)$, and to the action of no trade and no production elsewhere, is a pure control that generates it. The last claim is the remark following Definition~\ref{def:nash_equilibrium}.
+
+        2. Continuity and monotonicity are clear. At a solution of~\eqref{eq:clearing}, $O_t - B_t = G_t$. If the ceiling does not bind, then $G_t \ge 0$, so $O_t \ge B_t$ and $\rho^+_t = 1$; if the floor does not bind, then $G_t \le 0$, so $B_t \ge O_t$ and $\rho^-_t = 1$.
+
+        3. The aggregate executed trade of day $t$ is $\rho^+_t (B_t - S^-_t) - \rho^-_t (O_t - S^+_t) = \rho^-_t s_t$, since $\rho^+_t B_t = \rho^-_t O_t = \min(B_t, O_t)$ and $S_t = s_t \ge 0$; this is the conservation identity of Section~\ref{sec:finite_model}. The bounds follow from $H_0 = \Theta_0$ and $0 \le \rho^-_t \le 1$.
+    \end{proof}
+
+    \begin{lemma}[Constant price]
+        \label{lem:benchmark_constant}
+        Let $\Sigma$ be a population Nash equilibrium in which the trading limits do not bind. Then there exists $a \in [0, \kappa^1]$ such that $A_t = a$ for every $t \in \{0, \dots, T-1\}$. Moreover, $\rho^+_t = 1$ for every $t$, and $\rho^-_t = 1$ for every $t$ if $a > 0$.
+    \end{lemma}
+
+    \begin{proof}
+        By Lemma~\ref{lem:benchmark_deterministic}, for every $j$ there is a set $U^j$ of full $\sigma^j$-measure of components $u$ that are best responses and whose orders satisfy $|f^{j,u}_t| < C^{f,j}$ for every $t$. We fix such a $u$, write $\theta_t$, $f_t$ and $\hat f_t$ for its holdings, orders and executed trades, and construct deviations that only modify the executed trades of one or two days. By Lemma~\ref{lem:benchmark_deterministic}(1), they are generated by pure controls.
+
+        \emph{The price does not rise.} Suppose that $A_v < A_{v+1}$ for some $v$. The ceiling does not bind on day $v$ and the floor does not bind on day $v+1$, so $\rho^+_v = \rho^-_{v+1} = 1$. Since $|f_v| < C^{f,j}$, by continuity of the executed trade in the order, the agent can execute $\hat f_v + \delta$ on day $v$ for $\delta > 0$ small enough. Its holdings on day $v+1$ are then $\theta_{v+1} + \delta$, so that the order constraint of day $v+1$ is relaxed by $\delta$, and since $|f_{v+1}| < C^{f,j}$, it can execute $\hat f_{v+1} - \delta$ on day $v+1$. The production, the holdings after day $v+1$ and the terminal state are unchanged, and the total reward increases by $\delta (A_{v+1} - A_v) > 0$, which contradicts the optimality of $u$.
+
+        \emph{The price does not fall.} Suppose that $A_v > A_{v+1}$ for some $v$, so that $\rho^-_v = \rho^+_{v+1} = 1$. If $\theta_{v+1} > 0$, the agent can execute $\hat f_v - \delta$ on day $v$, for $0 < \delta \le \theta_{v+1}$ small enough: the order constraint $\hat f_v - \delta \ge -\theta_v$ of day $v$ amounts to $\theta_{v+1} \ge \delta$. Its holdings on day $v+1$ are then $\theta_{v+1} - \delta \ge 0$, and it can execute $\hat f_{v+1} + \delta$ on day $v+1$, since the order constraint of that day, $\hat f_{v+1} + \delta \ge -(\theta_{v+1} - \delta)$, holds. As before, the total reward increases by $\delta (A_v - A_{v+1}) > 0$. Hence $\theta^{j,u}_{v+1} = 0$ for every $j$ and every $u \in U^j$, so that $H_{v+1} = 0$, which contradicts $H_{v+1} \ge \Theta_0 > 0$ (Lemma~\ref{lem:benchmark_deterministic}(3)).
+
+        \emph{The price does not exceed the fine.} The price is therefore constant, $A_t = a \ge A^{\mathrm{floor}} = 0$. Suppose that $a > \kappa^1$. Then $a > 0$, the floor never binds, and $\rho^-_t = 1$ for every $t$. If $\theta_T > 0$, the agent can execute $\hat f_{T-1} - \delta$ on day $T-1$, for $0 < \delta \le \theta_T$ small enough. Its trading revenue increases by $a \delta$, and its shortfall by at most $\delta$, hence its penalty by at most $\kappa^1 \delta$: the total reward increases by at least $(a - \kappa^1) \delta > 0$. Hence $\theta^{j,u}_T = 0$ for every $j$ and $u \in U^j$, so that $H_T = 0 < \Theta_0$, a contradiction. Therefore $a \le \kappa^1 < A^{\mathrm{ceil}}$: the ceiling never binds, and $\rho^+_t = 1$ for every $t$. If $a > 0$, the floor never binds either, and $\rho^-_t = 1$ for every $t$.
+    \end{proof}
+
+    \begin{lemma}[Best response at a constant price]
+        \label{lem:benchmark_br}
+        Let $a \in [0, \kappa^1]$, and suppose that $A_t = a$ and $\rho^+_t = 1$ for every $t$, and $\rho^-_t = 1$ for every $t$ if $a > 0$. For an agent of type $j$ following any pure control, with production $q_t = \xi_t \eta_t$ and executed trades $\hat f_t$,
+        \begin{equation}
+            \label{eq:benchmark_decomposition}
+            \sum_{t=0}^{T-1} r(X_t, \hat\alpha_t) - g(X_T) = a\, \theta^j + \sum_{t=0}^{T-1} \sum_{k \in [m_j]} \mu^{j,k}_t(a)\, q^k_t - a\, T \varepsilon^j - a\, (\theta_T - E_T)^+ - (\kappa^1 - a) (E_T - \theta_T)^+ \le V^j_\star(a),
+        \end{equation}
+        with equality if and only if $q_t \in \cQ^j_t(a)$ for every $t$, $\theta_T \le E_T$ if $a > 0$, and $\theta_T \ge E_T$ if $a < \kappa^1$. The upper bound is attained by a pure control whose orders satisfy $|f_t| \le \bar C^{f,j}$. In particular, $V^j_\star(a)$ is the value of the best response of type $j$, and a pure control is a best response if and only if its trajectory satisfies the equality conditions.
+    \end{lemma}
+
+    \begin{proof}
+        Since $\theta_T = \theta^j + \sum_t \hat f_t$ and $A_t = a$, the trading part of the reward is $-a(\theta_T - \theta^j)$. Writing $p^j_t - c^{j,k} = \mu^{j,k}_t(a) + a\, e^{j,k}$, the production part is $\sum_{t,k} \mu^{j,k}_t(a)\, q^k_t + a(E_T - T\varepsilon^j)$. The penalty is $\kappa^1 (E_T - \theta_T)^+$. With $x = E_T - \theta_T = x^+ - x^-$, the identity $a x - \kappa^1 x^+ = -a x^- - (\kappa^1 - a) x^+$ gives the equality in~\eqref{eq:benchmark_decomposition}. Its last two terms are nonpositive since $0 \le a \le \kappa^1$, and $\sum_k \mu^{j,k}_t(a)\, q^k_t \le C^{\xi,j} \bar\mu^j_t(a)$ for $q_t \in \cQ^j$, with equality if and only if $q_t \in \cQ^j_t(a)$. This gives the bound and the equality conditions.
+
+        To attain the bound, let the agent produce $q_t \in \cQ^j_t(a)$ on every day. If $a > 0$, it executes $E_T - \theta^j$ on day $0$, in full since $\rho^\pm_0 = 1$, so that $\theta_T = E_T$; if $a = 0$, it buys $(E_T - \theta^j)^+$ on day $0$, in full since $\rho^+_0 = 1$, so that $\theta_T \ge E_T$. In both cases the order lies in $[-\theta^j, E_T]$, hence $|f_0| \le \max(\theta^j, E_T) \le \bar C^{f,j} < C^{f,j}$, and it is admissible. By Lemma~\ref{lem:benchmark_deterministic}(1), this sequence of actions is generated by a pure control, and the last claim follows from Definition~\ref{def:best_response}.
+    \end{proof}
+
+    \begin{proof}[Proof of Theorem~\ref{thm:benchmark_lp}]
+        \emph{Linear programming.} Problem~\eqref{eq:lp_primal} is feasible, with $q = 0$ and $\sigma = (-\Theta^{\mathrm c})^+$, and its value is bounded by $\sum_j \fn_j C^{\xi,j} \sum_t \bar\mu^j_t(0)$. By linear programming duality, \eqref{eq:lp_primal} and~\eqref{eq:lp_dual} have solutions and the same value, and feasible solutions of the two problems are both optimal if and only if they satisfy complementary slackness. For a fixed $a \in [0, \kappa^1]$, $(a, \bar\mu(a))$ is feasible for~\eqref{eq:lp_dual}, and its value $\Phi(a)$ is not larger than that of any feasible $(a, \lambda)$. Hence the value of~\eqref{eq:lp_dual} is $\min_{[0,\kappa^1]} \Phi$, and $a \in \cI^\star$ if and only if $(a, \bar\mu(a))$ solves~\eqref{eq:lp_dual}. The function $\Phi$ is convex, as a sum of a linear function and of maxima of affine functions, and continuous on the compact $[0, \kappa^1]$, so $\cI^\star$ is a nonempty closed interval. Writing $e(q) \coloneqq \sum_j \fn_j \sum_{t,k} e^{j,k} q^{j,k}_t$, complementary slackness between a feasible $(q, \sigma)$ and $(a, \bar\mu(a))$ reads: $a\, (\Theta^{\mathrm c} + \sigma - e(q)) = 0$ for the cap; $\sigma\, (\kappa^1 - a) = 0$ for the shortfall; and, for the capacities and the productions, $\bar\mu^j_t(a) (C^{\xi,j} - \sum_k q^{j,k}_t) = 0$ and $q^{j,k}_t (\bar\mu^j_t(a) - \mu^{j,k}_t(a)) = 0$, which together say that $q^j_t \in \cQ^j_t(a)$. Therefore $(q, \sigma)$ solves~\eqref{eq:lp_primal} and $a \in \cI^\star$ if and only if $(q, \sigma)$ is feasible for~\eqref{eq:lp_primal}, $a \in [0, \kappa^1]$, and
+        \begin{equation}
+            \label{eq:benchmark_kkt}
+            q^j_t \in \cQ^j_t(a) \ \text{ for all } j, t, \qquad a > 0 \ \Rightarrow\ e(q) = \Theta^{\mathrm c} + \sigma, \qquad a < \kappa^1 \ \Rightarrow\ \sigma = 0.
+        \end{equation}
+
+        \emph{Characterization (ii).} Let $\Sigma$ be a population Nash equilibrium in which the trading limits do not bind. By Lemma~\ref{lem:benchmark_constant}, $A_t = a \in [0, \kappa^1]$ for every $t$, and the fill ratios satisfy the assumptions of Lemma~\ref{lem:benchmark_br}. By Lemma~\ref{lem:benchmark_deterministic}(1), $\sigma^j$-almost every component is a best response, so it attains $V^j_\star(a)$ and satisfies the equality conditions of Lemma~\ref{lem:benchmark_br}. Averaging over $\sigma^j$ gives~(c). The sets $\cQ^j_t(a)$ are convex, so $\bar q^j_t \in \cQ^j_t(a)$. The aggregate emissions are $E = e(\bar q) + T\sum_j \fn_j \varepsilon^j$, so that $E - \Theta = e(\bar q) - \Theta^{\mathrm c}$. If $0 < a < \kappa^1$, then $\theta^{j,u}_T = E^{j,u}_T$ for almost every component, so $\bar\sigma = 0$ and $E = H_T = \Theta$ by Lemma~\ref{lem:benchmark_deterministic}(3), since $\rho^- \equiv 1$. If $a = \kappa^1$, then $\theta^{j,u}_T \le E^{j,u}_T$, so $\bar\sigma = E - H_T = E - \Theta$. If $a = 0$, then $\theta^{j,u}_T \ge E^{j,u}_T$, so $\bar\sigma = 0$ and $E \le H_T \le \Theta$. In the three cases, $(\bar q, \bar\sigma)$ is feasible for~\eqref{eq:lp_primal} and satisfies~\eqref{eq:benchmark_kkt}, which gives~(a), (b) and the first part of~(d). Finally, since $\Theta_0 = \Theta - \sum_t s_t$ and $\Theta^{\mathrm c} = \Theta - T \sum_j \fn_j \varepsilon^j$,
+        $$
+            \sum_{j} \fn_j V^j_\star(a) = a\, \Theta^{\mathrm c} + \sum_j \fn_j C^{\xi,j} \sum_t \bar\mu^j_t(a) - a \sum_t s_t = \Phi(a) - a \sum_t s_t,
+        $$
+        and $\Phi(a) = \min \Phi$ is the value of~\eqref{eq:lp_primal} by duality.
+
+        \emph{Existence (i).} Let $a^\star \in \cI^\star$ and $(q^\star, \sigma^\star)$ solve~\eqref{eq:lp_primal}, so that~\eqref{eq:benchmark_kkt} holds. Let $E^j \coloneqq \sum_{t,k} e^{j,k} q^{j,k,\star}_t + T\varepsilon^j$ be the emissions of an agent of type $j$ producing $q^{j,\star}$, and $E^\star \coloneqq \sum_j \fn_j E^j$. We set the terminal holdings
+        $$
+            \theta^j_T \coloneqq E^j + (\Theta - E^\star) \ \text{ if } E^\star \le \Theta, \qquad \theta^j_T \coloneqq \frac{\Theta}{E^\star} E^j \ \text{ if } E^\star > \Theta,
+        $$
+        so that $\sum_j \fn_j \theta^j_T = \Theta$ and $0 \le \theta^j_T \le E^j + \Theta$. By~\eqref{eq:benchmark_kkt}, if $0 < a^\star < \kappa^1$, then $\sigma^\star = 0$ and $E^\star = \Theta$, so $\theta^j_T = E^j$; if $a^\star = \kappa^1$, then $E^\star = \Theta + \sigma^\star \ge \Theta$, so $\theta^j_T \le E^j$; if $a^\star = 0$, then $\sigma^\star = 0$ since $\kappa^1 > 0$, so $E^\star \le \Theta$ and $\theta^j_T \ge E^j$. In the three cases, the terminal conditions of Lemma~\ref{lem:benchmark_br} hold at the price $a^\star$.
+
+        Let $F^j \coloneqq \theta^j_T - \theta^j$, so that $\sum_j \fn_j F^j = \Theta - \Theta_0 = \sum_t s_t$, and let $w_t \coloneqq s_t / \sum_v s_v$ if $\sum_v s_v > 0$, and $w_t \coloneqq \indic_{\{t = 0\}}$ otherwise. The agents of type $j$ follow the pure control that produces $\xi_t = \sum_k q^{j,k,\star}_t$ with the shares $\eta_t = q^{j,\star}_t / \xi_t$ (any shares if $\xi_t = 0$), and orders, at a state with holdings $\theta$ and allowance price $A$,
+        $$
+            f^j_t = \mathrm{sat}\big( w_t F^j + a^\star - A,\ -\min(\theta, C^{f,j}),\ C^{f,j} \big).
+        $$
+        We show by induction on $t$ that the market generated by this profile clears at $A_t = a^\star$ with $\rho_t = (1,1)$, so that the holdings of type $j$ are $\theta^j_t = \theta^j + F^j \sum_{v < t} w_v$. These holdings lie between $\theta^j$ and $\theta^j_T$, so $\theta^j_t \ge 0$ and $\theta^j_{t+1} = \theta^j_t + w_t F^j \ge 0$; and $|w_t F^j| \le |F^j| \le \max(\theta^j, \theta^j_T) \le \bar C^{f,j} < C^{f,j}$. Hence the order of type $j$ at the price $a^\star$ is $w_t F^j$, the saturation being inactive, and the aggregate order is $\cD_t(a^\star) = w_t \sum_j \fn_j F^j = s_t$. Every order is nonincreasing in the price. For $A < a^\star$ close enough to $a^\star$, every order is strictly larger than at $a^\star$, since $w_t F^j < C^{f,j}$, so $\cD_t(A) > s_t$ for every $A < a^\star$. For $A > a^\star$, the order of type $j$ is strictly smaller than at $a^\star$ as soon as $\theta^j_{t+1} > 0$, which holds for some $j$ since $\sum_j \fn_j \theta^j_{t+1} = \Theta_0 + \sum_{v \le t} s_v > 0$; so $\cD_t(A) < s_t$ for every $A > a^\star$. By Proposition~\ref{prop:clearing_cases}, the clearing condition of day $t$ has the unique solution $a^\star$, which is therefore selected; and $B_t - O_t = \cD_t(a^\star) - s_t = 0$, so $\rho_t = (1, 1)$ and every order is fully executed. This completes the induction.
+
+        In this market, $A_t = a^\star \in [0, \kappa^1]$ and $\rho_t = (1,1)$ for every $t$, every agent of type $j$ produces in the merit order $\cQ^j_t(a^\star)$ by~\eqref{eq:benchmark_kkt}, and ends with $\theta^j_T$, which satisfies the terminal conditions. By Lemma~\ref{lem:benchmark_br}, its control attains $V^j_\star(a^\star)$, the value of the best response. Each $\Upsilon^j$ being a singleton, $J^j = V^j_\star(a^\star)$ for every $j$, and the profile is a population Nash equilibrium, in which the trading limits do not bind.
+    \end{proof}
+
+    \begin{proof}[Proof of Corollary~\ref{cor:benchmark_unique}]
+        On each interval of $[0, \kappa^1] \setminus \fB$, the maximum defining $\bar\mu^j_t(a)$ is attained by a single affine function in every cell, whose slope is $-e^{j,k}$ for the technology $k$ of largest margin if that margin is positive, and $0$ otherwise. Hence $\Phi$ is affine on each such interval, with slope $\Theta^{\mathrm c} - e^{\mathrm{mo}}(a)$. The set of minimizers of a convex piecewise affine function is a nondegenerate interval if and only if its slope vanishes on one of the intervals of affinity, which is the stated condition. When $\cI^\star = \{a^\star\}$, Theorem~\ref{thm:benchmark_lp}(ii) gives the price, the rewards~\eqref{eq:benchmark_value} and the total reward. In a cell without tie at $a^\star$, $\cQ^j_t(a^\star)$ is a single production, which every best-responding component uses, by Lemma~\ref{lem:benchmark_br}. If $a^\star \in (0, \kappa^1)$, $E = \Theta$ by Theorem~\ref{thm:benchmark_lp}(ii)(d); if $a^\star \in \{0, \kappa^1\} \setminus \fB$, no cell has a tie, and $E = e^{\mathrm{mo}}(a^\star) + T\sum_j \fn_j \varepsilon^j$.
+    \end{proof}
