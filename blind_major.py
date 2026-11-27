@@ -1,10 +1,10 @@
-"""Blind major (POLICY_SURFACES.md §4.1): the major's best response AS A PRICE TAKER
+"""Blind major (policy surfaces, Fig. 3): the major's best response AS A PRICE TAKER
 against the final equilibrium mixture of a rung-3 run.
 
     python3 blind_major.py --run-dir results_majmin/fast_r3_T30_K30_n100_block_seed42_bm1 \
         [--iters 4000 --batch 256 --bank 65536 --fresh]
 
-Price bank (as utils_majmin_fast.build_bank) with the FINAL buffers, k = K + 1,
+Price bank (as the bank of utils_majmin.fictitious_play_majmin) with the FINAL buffers, k = K + 1,
 gamma ~ the whole box, major component u ~ U{0..k-1} per market; loss
 -mean(rollout_major) / s0 with fresh idiosyncratic noise every step; cosine lr
 1e-3 -> 1e-4; initialised from policy_{K}_type1.eqx (and, with --fresh, also from
@@ -124,7 +124,7 @@ def train(p, key):
     return pf, L
 
 
-# ── frozen 'prior' block (as utils_majmin_fast), for the check ───────────────
+# ── frozen 'prior' block (as utils_majmin.make_blocks), for the check ───────────────
 Sb = int(prog['S'])
 gamB, PB, eB, imB, iminB, _ = draw_markets(env, jax.random.fold_in(jax.random.PRNGKey(VERIFY_SEED), 0),
                                            Sb, T, n, prior)

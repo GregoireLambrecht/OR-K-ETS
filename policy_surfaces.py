@@ -1,4 +1,4 @@
-"""Policy surfaces of the major–minor market: simulation (POLICY_SURFACES.md §2, §3, §6.2).
+"""Policy surfaces of the major–minor market: simulation.
 
     python3 policy_surfaces.py --run-dirs <seed run 1> ... <seed run L> --out <study>/surfaces \
         [--S 512 --res 13 --floor-max 30 --chunk 1024]

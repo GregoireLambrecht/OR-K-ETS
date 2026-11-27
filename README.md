@@ -41,6 +41,52 @@ pip install -r requirements.txt          # jax[cuda13], equinox, optax, numpy, p
 `requirements.txt` pins the core packages; `requirements-freeze.txt` is the
 full `pip freeze` of the environment the paper was produced with.
 
+## Major–minor market clearing (`main_majmin.py`)
+
+The second model of this folder: the price is no longer exogenous but **cleared
+every day** from the agents' demand schedules (`MARKET_CLEARING.md`), and the
+large public producers (type 2) become **one strategic major player** who
+internalises its price impact, facing the private producers and the financial
+institutions as price-taking minor populations (`MAJOR_MINOR_CLEARING.md`).
+It is solved by fictitious play in `utils_majmin.py`: price bank for the minors'
+best responses, the major's best response through the clearing (IFT gradient),
+a failure check with one fresh restart for every best response, and frozen
+evaluation blocks. Rung 2 is one fixed scenario, rung 3 the scenario box.
+
+```bash
+# the scenario box (defaults in envs/base_params.py), read once at import
+export KETS_FLOOR_MAX=15 KETS_FLOOR_MIN=0 KETS_ALLOC_MIN=0.5 KETS_ALLOC_MAX=1.0 \
+       KETS_KAPPA_MIN=1 KETS_KAPPA_MAX=6 KETS_MM_MIN=0 KETS_MM_MAX=0.5
+
+# tests (CPU)
+for m in block support; do JAX_PLATFORMS=cpu KETS_FLOOR_MODE=$m python3 tests/test_majmin.py; done
+
+# fictitious play (reference run: about 10 h on one or two GPUs; resumable)
+python3 main_majmin.py --rung 3 --fresh-br --nb-policy 50 --t-grid 100 --n-sim 50 \
+    --clear-iters 24 --model-dir results_majmin/<run>
+#   rung 2 (fixed reference scenario): --rung 2
+python3 plot_mc_convergence.py --run-dir results_majmin/<run> --block prior   # and --block ref
+python3 plot_mc_price_paths.py --run-dir results_majmin/<run> --block ref     # kappa_lo, floor_hi, ...
+
+# regression: re-evaluate the last iteration and compare with progress.json
+python3 tests/regression_majmin.py --run-dir results_majmin/<run>
+
+# policy surfaces (price, rationing at the floor, blind-major distortion,
+# volatility, days on the floor, kappa^2 p by regime)
+python3 blind_major.py --run-dir results_majmin/<run> --floor-max 15
+python3 policy_surfaces.py --run-dirs results_majmin/<run> --out results_majmin/<run>/surfaces \
+    --floor-max 15 --range Afloor 0 15 --range init_alloc 0.5 1.0
+python3 plot_policy_surfaces.py --surfaces results_majmin/<run>/surfaces
+```
+
+`--floor-max` must equal the run's `KETS_FLOOR_MAX` (the scripts check it against
+`progress.json`, which also records the box). Outputs go to
+`results_majmin/<run>/`: the policies `policy_<k>_type<j>.eqx`, `progress.json`
+(per iteration and block: exploitability per type, clearing diagnostics),
+`losses/`, `figs/`, `counterfactual/` (blind major) and `surfaces/`.
+
+# The PMFG with an exogenous price (`main_rung3.py`)
+
 ## Shipped snapshot: trained policies and audit
 
 You do not have to run the 30-hour solves. `artifacts/` holds the outputs the
@@ -173,9 +219,14 @@ movement. Every figure comes as PDF and PNG.
 | `helper_plot.py` | house style, per-iteration and convergence sheets |
 | `main_rung3.py`, `pretrain_mm_r3.py`, `audit_pmfg.py`, `audit_paths.py`, `collect_audit.py`, `plot_audit_sheet.py` | entry points, one per step |
 | `diagnostics.py` | rollout diagnostics for the per-iteration sheet |
+| `envs/environment_majmin.py`, `envs/models_majmin.py`, `utils_majmin.py`, `main_majmin.py` | major–minor clearing: environment, networks, fictitious play, entry point |
+| `envs/environment_v2.py`, `envs/models_v2.py`, `envs/params_v2.py` | the cleared market (v2) the major–minor environment builds on |
+| `blind_major.py`, `policy_surfaces.py`, `plot_policy_surfaces.py`, `majmin_eval_common.py` | major–minor evaluation: blind (price-taking) major, policy surfaces |
+| `plot_mc_convergence.py`, `plot_mc_price_paths.py`, `plot_majmin_scenarios.py` | major–minor figures |
+| `tests/` | `test_clearing*.py`, `test_majmin.py` (CPU unit tests), `regression_majmin.py` (against a finished run) |
 | `artifacts/` | compressed snapshot of the trained policies and audit, plus `unpack.sh` |
 | `figs_audit/` | the paper's audit figures (PDF + PNG) |
 
-`results_floor*/`, `mm_warmstart_r3/` and `logs/` are outputs and are
+`results_floor*/`, `results_majmin/`, `mm_warmstart_r3/` and `logs/` are outputs and are
 git-ignored; `artifacts/` is the tracked copy of the ones the paper used, and
 `figs_audit/` holds the final figures as committed.

@@ -1,9 +1,9 @@
 # Major–minor market clearing — design and algorithm
 
-This document is the design for the next model, built on top of the market-clearing
-model of `MARKET_CLEARING.md`. It is kept both on branch `market-clearing` and on
-branch `major-minor-clearing` (which holds only this document). Implement it starting
-from `market-clearing` once that branch's code works.
+This document specifies the major–minor model, built on top of the market-clearing
+model of `MARKET_CLEARING.md`. It is implemented in `envs/environment_majmin.py`,
+`envs/models_majmin.py` and `utils_majmin.py` (entry point `main_majmin.py`, tests in
+`tests/test_majmin.py` and `tests/regression_majmin.py`); the README gives the commands.
 
 This document is self-contained: it restates the clearing rules, then adds the major
 players, the sampling rules and the full algorithm.
@@ -507,11 +507,29 @@ for iteration k = 1 .. K:
   log the diagnostics of §9
 ```
 
-**Notes.**
-- The minors' best response is exactly today's, with $(A, \rho)$ instead of $A$.
-- The price bank of `market-clearing` (clear many markets once per iteration, sample
-  minibatches) applies to step (a) only: in step (b) the prices depend on the
-  deviating major.
+**As implemented (`utils_majmin.fictitious_play_majmin`), with $N_0 = 1$.**
+- **The major is one aggregate player.** Its state and its coefficients
+  ($C^f$, $C^\xi$, $\theta_0$, $\sigma_\varepsilon$) are those of type 2 scaled by
+  $m_0$, the type-2 weight of the scenario, so the clearing reads
+  $D_t = f^0_t + \sum_{j \in \{1,3\}} \mathfrak n_j \, \mathrm{mean}_i f^{j,i}_t - S_t$
+  with weight 1 on the major.
+- **Price bank, step (a) only.** Once per iteration `n_bank` markets are cleared
+  without gradient and their public paths stored; every minor gradient step samples
+  `B` of them with fresh idiosyncratic noise. In step (b) the prices depend on the
+  deviating major, so the market is re-cleared at every step.
+- **Steps (a) and (b) run concurrently**, on two GPUs when there are two.
+- **Warm or fresh best responses.** From iteration `warm_from` (default 2) each best
+  response starts from the previous one with a smaller budget and a constant learning
+  rate; `--fresh-br` trains every best response from scratch (cosine learning rate).
+- **Failure check, every iteration.** On the main frozen block (prior for rung 3, ref
+  for rung 2) a type fails if its exploitability is negative beyond one standard
+  error, if its training loss is stuck at 0 (no trade), or, for the major, if its
+  training loss ended above where it started (by more than 25 %). A failed type is
+  retrained once from a fresh seed with the full budget; if it still fails, its
+  previous best response is reused for that iteration (`rejected` in `progress.json`).
+- **Evaluation blocks.** Rung 2: `ref`. Rung 3: `prior` (gamma ~ Q) and five fixed
+  scenarios inside the training box: `ref` (clipped to the box), `alloc_lo`, `kappa_lo`,
+  `floor_hi`, `mm_thick` (the reference moved to one edge of the box).
 - $s_0$ is a fixed reward scale for the major (aggregate units), like $s_j$.
 
 ### Algorithm 4 — Audit
@@ -560,16 +578,14 @@ for iteration k = 1 .. K:
 
 ---
 
-## 11. Roadmap
+## 11. Status
 
-1. Implement and validate `market-clearing` first (its `MARKET_CLEARING.md`).
-2. **Diagnostic.** Train one major best response (myopic, then full) against the
-   converged `market-clearing` equilibrium, where type 2 is a price-taking population.
-   Its gain over the price-taking type-2 policy measures the market power left on the
-   table. If it is small, report it and keep the mean-field model.
-3. If the gain is significant: full Algorithm 3 with $N_0 = 1$.
-4. Robustness: $N_0 = 5$ competing generators, against $N_0 = 1$.
-5. Audits of Algorithm 4.
+- Implemented: Algorithms 1–3 with $N_0 = 1$, myopic major gradient, both rungs.
+- Reference run (rung 3, T = 100, K = 50, n = 50; box init_alloc [0.5, 1],
+  kappa [1, 6], Afloor [0, 15], mm_share [0, 0.5], fresh best responses): weighted
+  exploitability 5.4 % on the prior block and 1.8 % at the reference after 50 iterations.
+- Not implemented: $N_0 > 1$, the full (non-myopic) major gradient, the audits of
+  Algorithm 4.
 
 ## 12. Paper changes
 

@@ -1,5 +1,5 @@
 """Policy surfaces of the major–minor market: metrics, aggregations, figures
-(POLICY_SURFACES.md §4, §5, §6.3, §7).
+(Figs. 1-6; the definitions are below).
 
     python3 plot_policy_surfaces.py --surfaces <study>/surfaces
 

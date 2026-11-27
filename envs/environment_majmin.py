@@ -330,7 +330,7 @@ class MajorMinorEnv(MarketClearingEnvV2):
 
     def rollout_major(self, policy, A_traj, rho_traj, H_traj, P_traj, idio_maj, ctx):
         """The aggregate major (state x m0) price-taking against frozen (A, rho, H),
-        mirroring rollout_minor for one player (POLICY_SURFACES.md §4.1).
+        mirroring rollout_minor for one player.
         idio_maj (T,) in aggregate units (raw x m0). Returns the total reward (scalar)."""
         T_int = int(self.T)
         X0 = self.major_initial_state()

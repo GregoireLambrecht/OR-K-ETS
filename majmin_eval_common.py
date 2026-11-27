@@ -1,5 +1,5 @@
-"""Shared loading for the evaluation scripts of POLICY_SURFACES.md
-(blind_major.py, policy_surfaces.py). Import AFTER setting the env variables
+"""Shared loading for the evaluation scripts of a finished major-minor run
+(blind_major.py, policy_surfaces.py, tests/regression_majmin.py). Import AFTER setting the env variables
 with `set_env_from_progress`."""
 import os
 import json
@@ -45,17 +45,10 @@ def load_mixture(run_dir, prog):
     """Final mixture, all saved slots 0..K (k = K + 1 components), in K_MAX buffers."""
     from envs.environment import N_TYPES
     from envs.environment_majmin import MINORS, MAJOR
-    from envs.models_majmin import make_buffer, buffer_set
-    from envs.params_v2 import K_MAX
-    from utils_majmin import load_net
+    from utils_majmin import load_net, make_buffers
     K = len(prog['records'])
     nets = [[load_net(run_dir, i, j) for j in range(N_TYPES)] for i in range(K + 1)]
-    bufs, stats = [], []
-    for j in range(N_TYPES):
-        b, st = make_buffer(nets[0][j], K_MAX)
-        for i, tr in enumerate(nets):
-            b = buffer_set(b, i, tr[j])
-        bufs.append(b); stats.append(st)
+    bufs, stats = make_buffers(nets)
     return dict(K=K, k=K + 1, nets=nets,
                 minor_buf=tuple(bufs[j] for j in MINORS),
                 minor_static=tuple(stats[j] for j in MINORS),

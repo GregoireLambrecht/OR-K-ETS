@@ -151,7 +151,7 @@ def test_5_minor_rollout():
 
 
 def test_6_major_rollout_reproduces_cleared_reward():
-    """POLICY_SURFACES.md §4.1: the major's price-taking rollout of component u on the
+    """The major's price-taking rollout of component u on the
     paths of a market cleared with component u returns that market's r0."""
     n, k = 6, 3
     bufs, stats, pols = _mix(k)

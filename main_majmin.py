@@ -1,7 +1,7 @@
-"""Major–minor market clearing (MAJOR_MINOR_CLEARING.md), fictitious play.
+"""Major–minor market clearing (MAJOR_MINOR_CLEARING.md), fictitious play (utils_majmin).
 
     rung 2 (fixed scenario current_kets):
-      python3 main_majmin.py --rung 2 --model-dir results_majmin/r2_T30_K30_n30
+      python3 main_majmin.py --rung 2 [--fresh-br] --model-dir results_majmin/r2_T30_K30_n30
     rung 3 (scenario box, FiLM):
       KETS_FLOOR_MAX=30 python3 main_majmin.py --rung 3 --model-dir results_majmin/r3_T30_K30_n30
 """
@@ -28,12 +28,10 @@ p.add_argument('--seed', type=int, default=42)
 p.add_argument('--floor-mode', default='block', choices=['block', 'support'])
 p.add_argument('--agents', type=int, default=20, help='only the rounding of the type weights, as in v1')
 p.add_argument('--mm-steps', type=int, default=6000)
-p.add_argument('--fast', action='store_true',
-               help='price bank + warm-started BRs (one fresh restart on failure) + 2 GPUs')
 p.add_argument('--iters-warm', type=int, default=2000)
 p.add_argument('--iters-major-warm', type=int, default=1000)
 p.add_argument('--lr-warm', type=float, default=1e-4, help='constant lr of warm-started fine-tuning')
-p.add_argument('--fresh-br', action='store_true', help='fast mode, but every best response trains from scratch')
+p.add_argument('--fresh-br', action='store_true', help='every best response trains from scratch (no warm start)')
 p.add_argument('--bank-chunk', type=int, default=8192, help='markets cleared per bank-building call')
 p.add_argument('--bank', type=int, default=65536, help='markets in the minors price bank')
 p.add_argument('--clear-iters', type=int, default=40, help='bisection halvings per side')
@@ -54,7 +52,6 @@ from envs.environment_majmin import MajorMinorEnv
 from envs.models_majmin import minor_policy, IN_DIM
 from utils import CTX_REF
 from utils_majmin import fictitious_play_majmin
-from utils_majmin_fast import fictitious_play_majmin_fast
 
 env = MajorMinorEnv(kappa=CTX_REF[1], T=args.t_grid, generate_P_func=generate_prices_ou,
                     A0=A0_BASE, P0=P0, market_impact_func=market_impact_base,
@@ -126,15 +123,13 @@ print(f"MAJOR-MINOR market clearing | rung {args.rung} | ref {CTX_REF} | seed {a
       f"floor [{FLOOR_MIN}, {FLOOR_MAX}] mm [{MM_MIN}, {MM_MAX}]")
 print(f"save -> {args.model_dir}   JAX devices: {jax.devices()}")
 print("=" * 76, flush=True)
-(fictitious_play_majmin_fast if args.fast else fictitious_play_majmin)(
+fictitious_play_majmin(
     env, args.rung, CTX_REF, K=args.nb_policy, T=args.t_grid, n=args.n_sim, iters=args.iters,
     iters0=args.iters_major, lr=args.lr, lr_min=args.lr_min, B=args.batch, B0=args.batch_major,
     S=args.verify_samples, S_fixed=args.fixed_samples, M=args.eval_samples,
     key=jax.random.PRNGKey(args.seed), save_dir=args.model_dir, mm_warmstart=mm_path,
-    **(dict(iters_warm=args.iters_warm, iters0_warm=args.iters_major_warm, n_bank=args.bank,
-            lr_warm=args.lr_warm, bank_chunk=args.bank_chunk,
-            warm_from=(10 ** 9 if args.fresh_br else 2))
-       if args.fast else {}),
+    iters_warm=args.iters_warm, iters0_warm=args.iters_major_warm, n_bank=args.bank,
+    lr_warm=args.lr_warm, bank_chunk=args.bank_chunk, warm_from=(10 ** 9 if args.fresh_br else 2),
     meta={'seed': args.seed, 'solver': f'majmin_rung{args.rung}', 'floor_max': FLOOR_MAX,
           'gamma_box': {'init_alloc': [ALLOC_MIN, ALLOC_MAX], 'kappa': [KAPPA_MIN, KAPPA_MAX],
                         'Afloor': [FLOOR_MIN, FLOOR_MAX], 'mm_share': [MM_MIN, MM_MAX]}})
