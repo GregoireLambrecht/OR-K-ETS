@@ -16,14 +16,14 @@ from envs.params_v2 import A_CEIL_V2, FLOOR_MODE, K_MAX
 from envs.environment_majmin import (MajorMinorEnv, clear_price, _bisect, _D, _order,
                                      MINORS, MAJOR)
 from envs.models_majmin import minor_policy, major_policy, make_buffer, buffer_set
-from utils import norm_gamma
+from utils import norm_gamma, CTX_REF
 
 T = 10
 env = MajorMinorEnv(kappa=3.0, T=T, generate_P_func=generate_prices_ou, A0=A0_BASE, P0=P0,
                     market_impact_func=market_impact_base, generate_eps0_func=supply_noise_base,
                     generate_eps_idiosyncratic_func=idiosyncratic_noise_base,
                     A_scale=A_SCALE_BASE, P_scale=P_SCALE_BASE, agent_per_policy=20)
-G = jnp.array([0.9, 3.0, 6.0, 0.4], jnp.float32)
+G = jnp.array(CTX_REF, jnp.float32)      # the layout's reference (v4: (0.9, 3, 6, 0.4))
 env = env.bind(G).set_T(T)
 SC = float(env.A_scale)
 FL, CE = jnp.float32(float(env.Afloor)), jnp.float32(A_CEIL_V2)

@@ -35,6 +35,8 @@ p.add_argument('--fresh-br', action='store_true', help='every best response trai
 p.add_argument('--bank-chunk', type=int, default=8192, help='markets cleared per bank-building call')
 p.add_argument('--bank', type=int, default=65536, help='markets in the minors price bank')
 p.add_argument('--clear-iters', type=int, default=40, help='bisection halvings per side')
+p.add_argument('--major-price-taker', action='store_true',
+               help='job 2 (RUNS_SETTING.md): the major best-responds as a price taker on frozen paths')
 args = p.parse_args()
 os.environ['KETS_FLOOR_MODE'] = args.floor_mode
 os.environ['KETS_N_SIM'] = str(args.n_sim)
@@ -81,7 +83,7 @@ def _sample(key, B, theta_max=0.45):
     X = jnp.stack([t_n, th_n, z, z, eps_n, A_n, P_n, Aa_n], axis=1)
     if IN_DIM > X.shape[1]:                     # public history as input (KETS_USE_H=1)
         X = jnp.concatenate([X, H], axis=1)
-    ctx = jax.random.uniform(jax.random.fold_in(key, 9), (B, 4), minval=-1.0, maxval=1.0)
+    ctx = jax.random.uniform(jax.random.fold_in(key, 9), (B, CTX_DIM), minval=-1.0, maxval=1.0)
     return X, ctx, _target(t_n, th_n)
 
 
@@ -119,8 +121,10 @@ os.makedirs(args.model_dir, exist_ok=True)
 mm_path = fit_mm_warmstart(os.path.join(args.model_dir, 'fi_warmstart.eqx'), args.mm_steps)
 print("=" * 76)
 print(f"MAJOR-MINOR market clearing | rung {args.rung} | ref {CTX_REF} | seed {args.seed} | "
-      f"box: alloc [{ALLOC_MIN}, {ALLOC_MAX}] kappa [{KAPPA_MIN}, {KAPPA_MAX}] "
+      + (f"box: c [{C_MIN}, {C_MAX}] s [{S_MIN}, {S_MAX}] " if LAYOUT == 'v5' else f"box: alloc [{ALLOC_MIN}, {ALLOC_MAX}] ")
+      + f"kappa [{KAPPA_MIN}, {KAPPA_MAX}] "
       f"floor [{FLOOR_MIN}, {FLOOR_MAX}] mm [{MM_MIN}, {MM_MAX}]")
+print(f"setting: layout={LAYOUT} major_price_taker={args.major_price_taker} deterministic={DETERMINISTIC} penalty={PENALTY_MODE} no_major={NO_MAJOR} cap_f x{CAP_F_MULT:g}")
 print(f"save -> {args.model_dir}   JAX devices: {jax.devices()}")
 print("=" * 76, flush=True)
 fictitious_play_majmin(
@@ -130,7 +134,12 @@ fictitious_play_majmin(
     key=jax.random.PRNGKey(args.seed), save_dir=args.model_dir, mm_warmstart=mm_path,
     iters_warm=args.iters_warm, iters0_warm=args.iters_major_warm, n_bank=args.bank,
     lr_warm=args.lr_warm, bank_chunk=args.bank_chunk, warm_from=(10 ** 9 if args.fresh_br else 2),
+    major_price_taker=args.major_price_taker,
     meta={'seed': args.seed, 'solver': f'majmin_rung{args.rung}', 'floor_max': FLOOR_MAX,
-          'gamma_box': {'init_alloc': [ALLOC_MIN, ALLOC_MAX], 'kappa': [KAPPA_MIN, KAPPA_MAX],
-                        'Afloor': [FLOOR_MIN, FLOOR_MAX], 'mm_share': [MM_MIN, MM_MAX]}})
+          'gamma_box': ({'c': [C_MIN, C_MAX], 's': [S_MIN, S_MAX], 'Afloor': [FLOOR_MIN, FLOOR_MAX],
+                         'mm_share': [MM_MIN, MM_MAX], 'kappa': [KAPPA_MIN, KAPPA_MAX]} if LAYOUT == 'v5' else
+                        {'init_alloc': [ALLOC_MIN, ALLOC_MAX], 'kappa': [KAPPA_MIN, KAPPA_MAX],
+                         'Afloor': [FLOOR_MIN, FLOOR_MAX], 'mm_share': [MM_MIN, MM_MAX]}),
+          'setting': {'layout': LAYOUT, 'deterministic': DETERMINISTIC, 'penalty': PENALTY_MODE, 'no_major': NO_MAJOR,
+                      'cap_f_mult': CAP_F_MULT, 'ctx_ref': list(CTX_REF)}})
 print("\nDone.", flush=True)

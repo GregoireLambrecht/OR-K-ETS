@@ -21,7 +21,7 @@ import os
 from envs.base_params import A0_BASE, CAP_F_BASE, MEAN_MARKET_IMPACT
 
 A_REF        = A0_BASE        # pre-open price A^pre_0 (tie-breaker of the selection rule)
-A_CEIL_V2    = 200.0          # artificial ceiling (USD), existence only; must essentially never bind
+A_CEIL_V2    = float(os.environ.get('KETS_A_CEIL', 200.0))   # artificial ceiling (USD), existence only; must essentially never bind
 BETA_MIN_V2  = 0.1            # floor on the schedule slope (normalised price units)
 CLEAR_ITERS_V2 = int(os.environ.get('KETS_CLEAR_ITERS', 40))   # bisection halvings per side on [A_floor, A_CEIL_V2]; float32 saturates at ~24
 SIGMA_S      = 0.05 * CAP_F_BASE * MEAN_MARKET_IMPACT              # LEGACY fixed scale (runs before the scenario scaling)

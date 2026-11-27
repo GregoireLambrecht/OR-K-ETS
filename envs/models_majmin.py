@@ -26,7 +26,7 @@ import os
 USE_H = os.environ.get('KETS_USE_H', '0') == '1'
 H_DIM = 3                          # H_t is always computed (diagnostics, frozen paths)
 IN_DIM = STATE_DIM_DYNAMIC + (H_DIM if USE_H else 0)
-CTX_DIM = 4
+from envs.base_params import CTX_DIM          # 4 (layout v4) or 5 (v5)
 BETA_MIN_MINOR = 0.1
 BETA_MIN_MAJOR = 0.0
 

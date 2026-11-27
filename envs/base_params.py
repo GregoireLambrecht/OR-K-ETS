@@ -1,5 +1,35 @@
+import os
 import jax
 import jax.numpy as jnp
+
+# ── LP benchmark switches (benchmark_lp.tex, Assumption 1); defaults = the study ──
+# KETS_DETERMINISTIC=1: no noise (good price on its deterministic OU path, no
+#   exogenous supply, no uncontrolled emissions).
+# KETS_PENALTY=fixed: terminal penalty kappa^1 * shortage (a fixed fine, kappa^2 = 0)
+#   instead of kappa^2 * shortage * A_avg; the scenario's kappa is then kappa^1 in USD/t.
+# KETS_NO_MAJOR=1: no large producers (their weight is 0, the major has no mass).
+# KETS_CAP_F_MULT: multiplies every type's trading limit C^f (Assumption 1(v)).
+DETERMINISTIC = os.environ.get('KETS_DETERMINISTIC', '0') == '1'
+PENALTY_MODE = os.environ.get('KETS_PENALTY', 'index')
+assert PENALTY_MODE in ('index', 'fixed'), PENALTY_MODE
+NO_MAJOR = os.environ.get('KETS_NO_MAJOR', '0') == '1'
+CAP_F_MULT = float(os.environ.get('KETS_CAP_F_MULT', 1.0))
+
+# ── scenario layout (RUNS_SETTING.md) ──────────────────────────────────────────
+# v4 (default, the PMFG and the major-minor runs before 2026-11-27):
+#     gamma = (init_alloc, kappa, Afloor, mm_share); weights rounded on 20 agents.
+# v5 (RUNS_SETTING.md): gamma = (c, s, Afloor, mm_share, kappa2): coverage ratio of
+#     the total cap, the major's share of it, floor, market makers, penalty multiplier;
+#     masses (0.8 - mm, 0.2, mm); allocation by (c, s); supply scaled at gamma_ref.
+LAYOUT = os.environ.get('KETS_LAYOUT', 'v4')
+assert LAYOUT in ('v4', 'v5'), LAYOUT
+CTX_DIM = 5 if LAYOUT == 'v5' else 4
+MAJOR_MASS_V5 = 0.2                      # m0, fixed (v5)
+PRIV_MASS_V5 = 0.8                       # n_priv = PRIV_MASS_V5 - mm_share (v5)
+C_MIN = float(os.environ.get('KETS_C_MIN', 0.3))
+C_MAX = float(os.environ.get('KETS_C_MAX', 1.0))
+S_MIN = float(os.environ.get('KETS_S_MIN', 0.0))
+S_MAX = float(os.environ.get('KETS_S_MAX', 1.0))
 
 
 KRW_TO_USD = 0.0007
@@ -27,7 +57,7 @@ A0_BASE = 8637*KRW_TO_USD
 
 THETA_P = 0.01
 MU_P = 79
-SIGMA_P = 6
+SIGMA_P = 0.0 if DETERMINISTIC else 6
 P0 = 75
 
 
@@ -82,6 +112,8 @@ SIGMA_S     = 0.05 * CAP_F_BASE * MEAN_MARKET_IMPACT   # net-supply scale, ~9.7 
 
 def supply_noise_base(key, T):
     """Standard normal draws; scaled by SIGMA_S * sqrt(dt) in the clearing step."""
+    if DETERMINISTIC:
+        return jnp.zeros((T,))
     return jax.random.normal(key, (T,))
 
 
@@ -89,16 +121,35 @@ def white_noise_A_base(key, T):
     return jax.random.normal(key, (T,)) * 0.25
 
 def idiosyncratic_noise_base(key, sigma_eps, T):
+    if DETERMINISTIC:
+        return jnp.zeros((T,))
     return jnp.abs(jax.random.normal(key, (T,)) * sigma_eps)
 
 #Theta0,ef,eg,cf,cg,cap_f,cap_xi,sigma_eps,tec_control
-PRIVATE_GENERATOR = [THETA0_100_BASE, EF_BASE, EG_BASE, CF_BASE, CG_BASE, CAP_F_BASE, CAP_XI_BASE, SIGMA_EPS_BASE, -1.0]
+PRIVATE_GENERATOR = [THETA0_100_BASE, EF_BASE, EG_BASE, CF_BASE, CG_BASE, CAP_F_BASE*CAP_F_MULT, CAP_XI_BASE, SIGMA_EPS_BASE, -1.0]
 TEC_PRIVATE = 21/154
 
-BIG_PUBLIC_GENERATOR = [7*THETA0_100_BASE, EF_BASE, EG_BASE, CF_BASE, CG_BASE, CAP_F_BASE*7, CAP_XI_BASE*7, SIGMA_EPS_BASE*7, -1.0]
+BIG_PUBLIC_GENERATOR = [7*THETA0_100_BASE, EF_BASE, EG_BASE, CF_BASE, CG_BASE, CAP_F_BASE*7*CAP_F_MULT, CAP_XI_BASE*7, SIGMA_EPS_BASE*7, -1.0]
 TEC_PUBLIC = 141/188
 
-MARKET_MAKER = [0, EF_BASE, EG_BASE, CF_BASE, CG_BASE, CAP_F_BASE, 1e-5, 1e-5, 0]
+# Financial institutions never emit: no production capacity (C^xi = 0) and no emission
+# noise (sigma_eps = 0). Until 2026-11-27 both were 1e-5, so a financial institution
+# ending with theta = 0 was short by a hair and its marginal allowance value was the
+# full penalty (bug found by the Euler-residual test). The network inputs divide by
+# (T C^xi + 1e-4) and (sqrt(T) sigma_eps + 1e-4), so 0 is safe.
+MARKET_MAKER = [0, EF_BASE, EG_BASE, CF_BASE, CG_BASE, CAP_F_BASE*CAP_F_MULT, 0.0, 0.0, 0]
+
+# v5 reference scenario (RUNS_SETTING.md §3): c_ref = 0.9 (the calibration's allocation, a share
+# of full-fossil emissions for both producers), s_ref = s_cap(mm_ref): the major gets the same
+# coverage as the private producers (x = s / s_cap = 1); Afloor 6, mm_share 0.4, kappa2 3.
+def s_cap_v5(mm_share):
+    """The major's share of full-fossil capacity emissions (the plotting variable s_cap)."""
+    maj = MAJOR_MASS_V5 * BIG_PUBLIC_GENERATOR[6] * max(BIG_PUBLIC_GENERATOR[1], BIG_PUBLIC_GENERATOR[2])
+    pri = (PRIV_MASS_V5 - mm_share) * PRIVATE_GENERATOR[6] * max(PRIVATE_GENERATOR[1], PRIVATE_GENERATOR[2])
+    return maj / (maj + pri)
+
+
+CTX_REF_V5 = (0.9, s_cap_v5(0.4), 6.0, 0.4, 3.0)
 
 agent_templates = {
     'base': PRIVATE_GENERATOR,

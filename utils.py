@@ -1469,9 +1469,13 @@ CTX_NAMES = ('init_alloc', 'kappa', 'Afloor', 'financial_inst')
 # absent: it is held at the environment's constructor value and the conditioner
 # never sees it, so a row varying it would be off-distribution.
 # market-clearing branch: the reference is the paper's current_kets scenario
-CTX_REF = (0.9, 3.0, 6.0, 0.4)
+CTX_REF_V4 = (0.9, 3.0, 6.0, 0.4)
+CTX_REF = CTX_REF_V5 if LAYOUT == 'v5' else CTX_REF_V4     # v5: (c, s, Afloor, mm_share, kappa2)
+if os.environ.get('KETS_CTX_REF'):           # e.g. the LP benchmark: "0.8 60 0 0.2"
+    CTX_REF = tuple(float(v) for v in os.environ['KETS_CTX_REF'].split())
+    assert len(CTX_REF) == CTX_DIM, CTX_REF
 
-_R = dict(zip(CTX_NAMES, CTX_REF))
+_R = dict(zip(CTX_NAMES, CTX_REF_V4))        # the PMFG's fixed scenarios (layout v4)
 
 
 def _ctx(**kw):
@@ -1493,8 +1497,12 @@ FIXED_SCENARIOS = (
 )
 BLOCK_ORDER = ('prior',) + tuple(n for n, _ in FIXED_SCENARIOS)
 
-_G_LO = jnp.array([ALLOC_MIN, KAPPA_MIN, FLOOR_MIN, MM_MIN], dtype=jnp.float32)
-_G_HI = jnp.array([ALLOC_MAX, KAPPA_MAX, FLOOR_MAX, MM_MAX], dtype=jnp.float32)
+if LAYOUT == 'v5':
+    _G_LO = jnp.array([C_MIN, S_MIN, FLOOR_MIN, MM_MIN, KAPPA_MIN], dtype=jnp.float32)
+    _G_HI = jnp.array([C_MAX, S_MAX, FLOOR_MAX, MM_MAX, KAPPA_MAX], dtype=jnp.float32)
+else:
+    _G_LO = jnp.array([ALLOC_MIN, KAPPA_MIN, FLOOR_MIN, MM_MIN], dtype=jnp.float32)
+    _G_HI = jnp.array([ALLOC_MAX, KAPPA_MAX, FLOOR_MAX, MM_MAX], dtype=jnp.float32)
 
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -1502,8 +1510,11 @@ _G_HI = jnp.array([ALLOC_MAX, KAPPA_MAX, FLOOR_MAX, MM_MAX], dtype=jnp.float32)
 # ═════════════════════════════════════════════════════════════════════════════
 
 def norm_gamma(g):
-    """Raw context -> [-1, 1]^4 for the FiLM input."""
-    return 2.0 * (jnp.asarray(g, dtype=jnp.float32) - _G_LO) / (_G_HI - _G_LO) - 1.0
+    """Raw context -> [-1, 1]^4 for the FiLM input. An axis the box fixes (lo = hi,
+    e.g. the floor of the LP benchmark) maps to 0."""
+    span = _G_HI - _G_LO
+    z = 2.0 * (jnp.asarray(g, dtype=jnp.float32) - _G_LO) / jnp.where(span > 0, span, 1.0) - 1.0
+    return jnp.where(span > 0, z, 0.0)
 
 
 def bind_env(env, g):

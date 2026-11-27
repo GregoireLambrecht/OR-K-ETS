@@ -20,7 +20,8 @@ constant). Per FP iteration k:
       fresh (cosine lr). Every best response is CHECKED on the main frozen
       block (prior for rung 3, ref for rung 2): a type FAILS if its
       exploitability is negative beyond one standard error, if its training
-      loss is stuck at 0 (no trade), or, for the major, if its training loss
+      loss is stuck at 0 (no trade; not checked without a major, where no trade
+      can be the best response), or, for the major, if its training loss
       ended above where it started (diverged). A failed type is retrained once
       from a fresh seed with the full budget; if it still fails, its previous
       best response is reused for this iteration (recorded as 'rejected');
@@ -49,7 +50,7 @@ from envs.models_majmin import USE_H
 from envs.models_majmin import (minor_policy, major_policy, make_buffer, buffer_set,
                                 component, SchedulePolicy)
 from envs.params_v2 import K_MAX, FLOOR_MODE, SUPPLY_C, A_CEIL_V2, CLEAR_ITERS_V2
-from envs.base_params import ALLOC_MIN, ALLOC_MAX, KAPPA_MIN, KAPPA_MAX, FLOOR_MIN, FLOOR_MAX, MM_MIN, MM_MAX
+from envs.base_params import LAYOUT, C_MIN, S_MIN, NO_MAJOR, ALLOC_MIN, ALLOC_MAX, KAPPA_MIN, KAPPA_MAX, FLOOR_MIN, FLOOR_MAX, MM_MIN, MM_MAX
 from utils import _hms, _atomic_json, norm_gamma, VERIFY_SEED, CTX_REF
 
 COMP_SEED = 31337
@@ -70,6 +71,18 @@ def load_net(save_dir, k, j):
 def rung3_scenarios():
     """Fixed evaluation scenarios of rung 3, all INSIDE the training box: the
     reference (clipped to the box) and the reference moved to one edge per axis."""
+    if LAYOUT == 'v5':                 # (c, s, Afloor, mm_share, kappa2)
+        from envs.base_params import C_MAX, S_MAX
+        lo = (C_MIN, S_MIN, FLOOR_MIN, MM_MIN, KAPPA_MIN)
+        hi = (C_MAX, S_MAX, FLOOR_MAX, MM_MAX, KAPPA_MAX)
+        ref = tuple(float(min(max(c, l), h)) for c, l, h in zip(CTX_REF, lo, hi))
+
+        def at5(i, v):
+            r = list(ref)
+            r[i] = float(v)
+            return tuple(r)
+        return (('ref', ref), ('c_lo', at5(0, C_MIN)), ('s_lo', at5(1, S_MIN)),
+                ('floor_hi', at5(2, FLOOR_MAX)), ('mm_thick', at5(3, MM_MAX)), ('kappa_lo', at5(4, KAPPA_MIN)))
     lo = (ALLOC_MIN, KAPPA_MIN, FLOOR_MIN, MM_MIN)
     hi = (ALLOC_MAX, KAPPA_MAX, FLOOR_MAX, MM_MAX)
     ref = tuple(float(min(max(c, l), h)) for c, l, h in zip(CTX_REF, lo, hi))
@@ -105,7 +118,7 @@ def draw_markets(env, key, S, T, n, prior):
 def make_prior(env, rung, ctx_ref):
     if rung == 2:
         g_ref = jnp.asarray(ctx_ref, jnp.float32)
-        return lambda kk, b: jnp.broadcast_to(g_ref, (b, 4))
+        return lambda kk, b: jnp.broadcast_to(g_ref, (b, g_ref.shape[0]))
     return lambda kk, b: env.generate_context(kk, b)
 
 
@@ -185,7 +198,7 @@ def make_blocks(env, rung, ctx_ref, T, n, S, S_fixed, M):
         specs = [('prior', None, S)] + [(nm, c, S_fixed) for nm, c in rung3_scenarios()]
     blocks = {}
     for bi, (nm, c, Sb) in enumerate(specs):
-        pr = prior if c is None else (lambda kk, b, c=c: jnp.broadcast_to(jnp.asarray(c, jnp.float32), (b, 4)))
+        pr = prior if c is None else (lambda kk, b, c=c: jnp.broadcast_to(jnp.asarray(c, jnp.float32), (b, len(c))))
         gam, P, eps0, imaj, imin, _ = draw_markets(env, jax.random.fold_in(kv, bi), Sb, T, n, pr)
         imin = tuple(x[0] for x in imin)
         kE = jax.random.fold_in(kv, 100 + bi)
@@ -196,10 +209,12 @@ def make_blocks(env, rung, ctx_ref, T, n, S, S_fixed, M):
     return blocks, ('ref' if rung == 2 else 'prior')
 
 
-def make_evaluator(env, sim, ctx_ref):
+def make_evaluator(env, sim, ctx_ref, major_price_taker=False):
     """evaluate(b, k, new, minor_buf, maj_buf, hist_minor) -> (per_type, weighted, clearing, A):
     exploitability of the networks `new` against the mixture of the first k
-    buffer slots (hist_minor: the minors' networks of those slots)."""
+    buffer slots (hist_minor: the minors' networks of those slots). With
+    major_price_taker (job 2 of RUNS_SETTING.md) the major's best response is valued
+    like a minor's, on the mixture market's frozen paths (rollout_major), not re-cleared."""
     g_ref = jnp.asarray(ctx_ref, jnp.float32)
     s0 = float(env.major_reward_scale(float(env.bind(g_ref).major_mass())))
     s_minor = {j: float(env.reward_scale(j)) for j in MINORS}
@@ -217,13 +232,23 @@ def make_evaluator(env, sim, ctx_ref):
         return jax.vmap(lambda a, r, h, pp, g: env.bind(g).rollout_minor(
             net, j, a, r, h, pp, idio, norm_gamma(g)))(A, rho, H, P, gam)
 
+    @eqx.filter_jit
+    def major_frozen(net, A, rho, H, P, imaj_raw, gam):
+        return jax.vmap(lambda a, r, h, pp, im, g: env.bind(g).rollout_major(
+            net, a, r, h, pp, im * env.bind(g).major_mass(), norm_gamma(g)))(A, rho, H, P, imaj_raw, gam)
+
     def evaluate(b, k, new, minor_buf, maj_buf, hist_minor):
         Sb = b['S']
         ck = jax.random.split(jax.random.fold_in(jax.random.PRNGKey(COMP_SEED), k), Sb)
         u = jnp.arange(Sb) % k
         bj = {kk: b[kk] for kk in ('gam', 'P', 'eps0', 'imaj', 'imin')}
         A, rho, H, r0, ys, (Xf, X0f) = eval_sim(None, False, minor_buf, maj_buf, jnp.int32(k), bj, ck, u)
-        _, _, _, r0_br, _, _ = eval_sim(new[MAJOR], True, minor_buf, maj_buf, jnp.int32(k), bj, ck, u)
+        if NO_MAJOR:                    # no major (LP benchmark): nothing to deviate
+            r0_br = r0
+        elif major_price_taker:         # the price-taking deviation, on the frozen paths
+            r0_br = major_frozen(new[MAJOR], A, rho, H, b['P'], b['imaj'], b['gam'])
+        else:
+            _, _, _, r0_br, _, _ = eval_sim(new[MAJOR], True, minor_buf, maj_buf, jnp.int32(k), bj, ck, u)
         gaps, short_t = jax.vmap(lambda g, xf, x0: env.bind(g).minor_gaps(xf, x0))(b['gam'], Xf, X0f)
         per_type = [None] * N_TYPES
         for j in MINORS:
@@ -269,7 +294,8 @@ def fictitious_play_majmin(env, rung, ctx_ref, K=30, T=30, n=30, iters=8000, ite
                            iters_warm=2000, iters0_warm=1000, lr_warm=1e-4, n_bank=65536, bank_chunk=8192,
                            warm_from=WARM_FROM,
                            lr=1e-3, lr_min=1e-4, B=256, B0=64, S=200, S_fixed=100, M=32,
-                           key=None, save_dir=None, mm_warmstart=None, verbose=True, meta=None):
+                           key=None, save_dir=None, mm_warmstart=None, verbose=True, meta=None,
+                           major_price_taker=False):
     assert K < K_MAX
     bank_chunk = min(bank_chunk, n_bank)
     key = jax.random.PRNGKey(0) if key is None else key
@@ -316,7 +342,7 @@ def fictitious_play_majmin(env, rung, ctx_ref, K=30, T=30, n=30, iters=8000, ite
     minor_static = tuple(stats[j] for j in MINORS)
     maj_static = stats[MAJOR]
     sim = make_sim(env, minor_static, maj_static)
-    evaluate = make_evaluator(env, sim, ctx_ref)
+    evaluate = make_evaluator(env, sim, ctx_ref, major_price_taker)
     js = jnp.array(MINORS)
     scales = jnp.array([s_minor[j] for j in MINORS], jnp.float32)
 
@@ -405,8 +431,41 @@ def fictitious_play_majmin(env, rung, ctx_ref, K=30, T=30, n=30, iters=8000, ite
             return pf, L
         return stage
 
+    # ── the major as a PRICE TAKER (job 2): trained on the bank's frozen paths ──
+    def make_major_pt_stage(n_it, warm=False):
+        opt0 = make_opt(n_it, warm)
+
+        @jax.jit
+        def stage(p, key_, bank):
+            st = opt0.init(p)
+            N = bank['A'].shape[0]
+
+            def one(carry, it):
+                p_, s_ = carry
+                ks, ki = jax.random.split(jax.random.fold_in(key_, it))
+                sel = jax.random.randint(ks, (B,), 0, N)
+                H = bank['H'][sel] if USE_H else jnp.zeros((B, T, 3), jnp.float32)
+                A, rho, P, gam = bank['A'][sel], bank['rho'][sel], bank['P'][sel], bank['gam'][sel]
+                im = jax.vmap(env.generate_idiosyncratic_noise, in_axes=(0, None, None))(
+                    jax.random.split(ki, B), env.agent_params[MAJOR, 7], T)
+
+                def loss(pp):
+                    net = eqx.combine(pp, maj_static)
+                    R = jax.vmap(lambda a, r, h, pp_, i, g: env.bind(g).rollout_major(
+                        net, a, r, h, pp_, i * env.bind(g).major_mass(), norm_gamma(g)))(A, rho, H, P, im, gam)
+                    return -jnp.mean(R) / s0
+                l, g = jax.value_and_grad(loss)(p_)
+                upd, s_new = opt0.update(g, s_, p_)
+                return (eqx.apply_updates(p_, upd), s_new), l
+            (pf, _), L = jax.lax.scan(one, (p, st), jnp.arange(n_it))
+            return pf, L
+        return stage
+
     minor_fresh, minor_warm = make_minor_stage(iters), make_minor_stage(iters_warm, warm=True)
-    major_fresh, major_warm = make_major_stage(iters0), make_major_stage(iters0_warm, warm=True)
+    if major_price_taker:
+        major_fresh, major_warm = make_major_pt_stage(iters0), make_major_pt_stage(iters0_warm, warm=True)
+    else:
+        major_fresh, major_warm = make_major_stage(iters0), make_major_stage(iters0_warm, warm=True)
 
     force = os.environ.get('KETS_FORCE_RESTART') == '1'      # test only: exercise the restart path
 
@@ -472,17 +531,28 @@ def fictitious_play_majmin(env, rung, ctx_ref, K=30, T=30, n=30, iters=8000, ite
         tb = time.time()
         # (b) major on device d_maj — dispatched first, runs asynchronously
         p0 = jax.device_put(eqx.partition(maj_init, eqx.is_array)[0], d_maj)
-        maj_out = (major_warm if warm else major_fresh)(p0, jax.device_put(kb, d_maj), mb1, jb1, kk32_1)
         t_major_done = [None]
-
-        def _wait_major():
-            jax.block_until_ready(maj_out)
+        def _launch_major(out_):
+            def _wait_major():
+                jax.block_until_ready(out_)
+                t_major_done[0] = time.time()
+            th_ = threading.Thread(target=_wait_major); th_.start()
+            return th_
+        if NO_MAJOR:                    # LP benchmark: the major has no mass, no best response
+            maj_out = (p0, jnp.zeros((1,), jnp.float32))
             t_major_done[0] = time.time()
-        th = threading.Thread(target=_wait_major); th.start()
+            th = threading.Thread(target=lambda: None); th.start()
+        elif not major_price_taker:     # strategic major: re-clears, does not need the bank
+            maj_out = (major_warm if warm else major_fresh)(p0, jax.device_put(kb, d_maj), mb1, jb1, kk32_1)
+            th = _launch_major(maj_out)
         # (a) minors on device d_min: price bank, then best responses on the bank
         bank = build_bank(jax.device_put(kbank, d_min), mb0, jb0, kk32_0)
         jax.block_until_ready(bank)
         t_bank = time.time() - tb
+        if major_price_taker and not NO_MAJOR:     # price-taking major: on the bank, device d_maj
+            bank_maj = jax.device_put(bank, d_maj)
+            maj_out = (major_warm if warm else major_fresh)(p0, jax.device_put(kb, d_maj), bank_maj)
+            th = _launch_major(maj_out)
         ps = jax.device_put(stack_minor(m_init), d_min)
         min_out = (minor_warm if warm else minor_fresh)(ps, jax.device_put(ka, d_min), bank)
         p_stack, Lm = min_out
@@ -504,9 +574,13 @@ def fictitious_play_majmin(env, rung, ctx_ref, K=30, T=30, n=30, iters=8000, ite
                   f"major {L0[0]:+.4f}->{_tail(L0):+.4f}", flush=True)
 
         tailm = _tail(Lm)
-        stuck_now = {MINORS[0]: abs(float(tailm[0])) < STUCK_TOL,
-                     MINORS[1]: abs(float(tailm[1])) < STUCK_TOL,
-                     MAJOR: abs(float(_tail(L0))) < STUCK_TOL}
+        # No stuck rule without a major (the LP benchmark): there, no trade IS the best
+        # response of a financial institution at a flat price (no allowances, no production,
+        # value ~ 0), so a zero training loss is not a failure.
+        stuck_on = not NO_MAJOR
+        stuck_now = {MINORS[0]: stuck_on and abs(float(tailm[0])) < STUCK_TOL,
+                     MINORS[1]: stuck_on and abs(float(tailm[1])) < STUCK_TOL,
+                     MAJOR: stuck_on and abs(float(_tail(L0))) < STUCK_TOL}
         minor_buf = tuple(bufs[j] for j in MINORS)
         hist_minor = {j: [tr[j] for tr in nets] for j in MINORS}
 
@@ -514,7 +588,7 @@ def fictitious_play_majmin(env, rung, ctx_ref, K=30, T=30, n=30, iters=8000, ite
             """Types whose best response fails on the main block (see the module docstring)."""
             per_type, _, _, _ = evaluate(blocks[main_block], kk, new_, minor_buf, bufs[MAJOR], hist_minor)
             bad = [j for j in MINORS if failed(per_type[j]) or stuck_now[j]]
-            if failed(per_type[MAJOR]) or stuck_now[MAJOR] or diverged(L0_):
+            if not NO_MAJOR and (failed(per_type[MAJOR]) or stuck_now[MAJOR] or diverged(L0_)):
                 bad.append(MAJOR)
             return sorted(bad)
 
@@ -525,7 +599,9 @@ def fictitious_play_majmin(env, rung, ctx_ref, K=30, T=30, n=30, iters=8000, ite
             if MAJOR in restarted:
                 nkr = jax.random.split(kr, N_TYPES)
                 p0r = jax.device_put(eqx.partition(major_policy(nkr[MAJOR]), eqx.is_array)[0], d_maj)
-                maj_r = major_fresh(p0r, jax.device_put(jax.random.fold_in(kr, 1), d_maj), mb1, jb1, kk32_1)
+                maj_r = (major_fresh(p0r, jax.device_put(jax.random.fold_in(kr, 1), d_maj), bank_maj)
+                         if major_price_taker else
+                         major_fresh(p0r, jax.device_put(jax.random.fold_in(kr, 1), d_maj), mb1, jb1, kk32_1))
             bad_minor = [j for j in restarted if j in MINORS]
             if bad_minor:
                 nkr = jax.random.split(jax.random.fold_in(kr, 2), N_TYPES)
@@ -539,7 +615,7 @@ def fictitious_play_majmin(env, rung, ctx_ref, K=30, T=30, n=30, iters=8000, ite
                 for a, j in enumerate(MINORS):
                     if j in bad_minor:
                         new[j] = smr[j]
-                        stuck_now[j] = abs(float(tr_[a])) < STUCK_TOL
+                        stuck_now[j] = stuck_on and abs(float(tr_[a])) < STUCK_TOL
             if MAJOR in restarted:
                 new[MAJOR] = eqx.combine(jax.device_get(maj_r[0]), maj_static)
                 L0_kept = np.asarray(maj_r[1])
@@ -555,6 +631,8 @@ def fictitious_play_majmin(env, rung, ctx_ref, K=30, T=30, n=30, iters=8000, ite
                       f"{f'; still failing, previous BR reused for {rejected}' if rejected else ''}  "
                       f"[{_hms(time.time() - tr)}]", flush=True)
         del bank
+        if major_price_taker and not NO_MAJOR:
+            del bank_maj
         t_br = time.time() - tb
         if save_dir:
             os.makedirs(os.path.join(save_dir, 'losses'), exist_ok=True)
@@ -610,7 +688,8 @@ def fictitious_play_majmin(env, rung, ctx_ref, K=30, T=30, n=30, iters=8000, ite
                 'B': B, 'B0': B0, 'S': S, 'S_fixed': S_fixed, 'M': M, 'lr': lr, 'lr_min': lr_min,
                 'floor_mode': FLOOR_MODE, 'supply_c': SUPPLY_C, 'A_CEIL': A_CEIL_V2,
                 'N0': 1, 'major_type': MAJOR, 'minor_types': list(MINORS),
-                'major_gradient': 'myopic_ift', 'public_history_input': bool(USE_H), 'm0_ref': m0_ref, 's0': s0,
+                'major_gradient': 'price_taker_frozen_paths' if major_price_taker else 'myopic_ift',
+                'major_price_taker': bool(major_price_taker), 'no_major': NO_MAJOR, 'layout': LAYOUT, 'public_history_input': bool(USE_H), 'm0_ref': m0_ref, 's0': s0,
                 'type_shares': [float(x) for x in w_ref], **(meta or {}), 'records': records})
         if verbose:
             print(f"  checkpoint saved  [iteration {_hms(time.time() - ti)}]", flush=True)

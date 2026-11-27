@@ -53,6 +53,7 @@ class ExogenousMarketEnvJAX(eqx.Module):
     Afloor:         jnp.ndarray
     financial_inst: jnp.ndarray
     mm_share:       jnp.ndarray
+    major_share:    jnp.ndarray     # v5: s, the major's share of the total cap
     BM_uniform:     jnp.ndarray
 
     def __init__(self, kappa, T, generate_P_func, A0, P0, market_impact_func,
@@ -89,6 +90,7 @@ class ExogenousMarketEnvJAX(eqx.Module):
         # recorded number while type_counts silently kept the old population.
         self.financial_inst = jnp.float32(financial_inst)
         self.mm_share       = jnp.float32(financial_inst)
+        self.major_share    = jnp.float32(0.0)
         self.BM_uniform     = jnp.float32(1.0)
 
         # Population composition: fixed proportions, static so shapes are known.
@@ -138,6 +140,12 @@ class ExogenousMarketEnvJAX(eqx.Module):
         context: it stays at its constructor value, so the conditioner never
         sees it move.
         """
+        if LAYOUT == 'v5':             # (c, s, Afloor, mm_share, kappa2), uniform on the box
+            ks = jax.random.split(key, 5)
+            lo = jnp.array([C_MIN, S_MIN, FLOOR_MIN, MM_MIN, KAPPA_MIN], jnp.float32)
+            hi = jnp.array([C_MAX, S_MAX, FLOOR_MAX, MM_MAX, KAPPA_MAX], jnp.float32)
+            return jnp.stack([jax.random.uniform(ks[i], (B,), minval=lo[i], maxval=hi[i])
+                              for i in range(5)], axis=1)
         k_a, k_k, k_f, k_m = jax.random.split(key, 4)
         allocation = jax.random.uniform(k_a, (B,), minval=ALLOC_MIN, maxval=ALLOC_MAX)
         kappa      = jax.random.uniform(k_k, (B,), minval=KAPPA_MIN, maxval=KAPPA_MAX)
@@ -165,10 +173,14 @@ class ExogenousMarketEnvJAX(eqx.Module):
         being linear, is identical to simulating that many agents rather than an
         approximation of it.
         """
+        if LAYOUT == 'v5':             # continuous masses (RUNS_SETTING.md §1)
+            m0 = 0.0 if NO_MAJOR else MAJOR_MASS_V5
+            return jnp.stack([PRIV_MASS_V5 - self.mm_share, jnp.float32(m0) + 0.0 * self.mm_share,
+                              self.mm_share])
         N      = jnp.float32(self.agent_per_policy)
         n_fi   = jnp.round(N * self.mm_share)
         n_prod = N - n_fi
-        n_big  = jnp.round(jnp.float32(BIG_ON_PRIVATE) * n_prod)
+        n_big  = 0.0 * n_prod if NO_MAJOR else jnp.round(jnp.float32(BIG_ON_PRIVATE) * n_prod)
         return jnp.stack([n_prod - n_big, n_big, n_fi]) / N
 
     @property
@@ -207,8 +219,29 @@ class ExogenousMarketEnvJAX(eqx.Module):
         averaged 3.5x the population's capacity.
         """
         base = self.create_initial_state(self.agent_params[j], self.A0, self.P0, self.T)
+        if LAYOUT == 'v5':
+            return base.at[1].set(self.theta_v5()[j])
         theta = base[1] * self._bm_multipliers()[j] * self.init_alloc
         return base.at[1].set(theta)
+
+    def total_cap_v5(self):
+        """Theta_tot = c T sum_l n_l C^xi_l e^{l,fuel}: the emissions at full capacity with the
+        dirtiest technology, times the coverage ratio c (= init_alloc's slot in v5)."""
+        w = self.context_weights()
+        ap = self.agent_params
+        full = self.T * ap[:, 6] * jnp.maximum(ap[:, 1], ap[:, 2])      # per unit of mass
+        return self.init_alloc * jnp.sum(w * full)
+
+    def theta_v5(self):
+        """Initial holdings PER UNIT OF MASS of each label: the major gets s Theta_tot (its
+        state is per unit of mass x m0), the private producers the rest, market makers 0.
+        Without a major everything goes to the private producers."""
+        w = self.context_weights()
+        tot = self.total_cap_v5()
+        s_priv = jnp.where(w[1] > 0, 1.0 - self.major_share, 1.0)
+        th_priv = s_priv * tot / jnp.maximum(w[0], 1e-12)
+        th_major = jnp.where(w[1] > 0, self.major_share * tot / jnp.maximum(w[1], 1e-12), 0.0)
+        return jnp.stack([th_priv, th_major, jnp.float32(0.0) * tot])
 
     def population_initial_states(self, K):
         """Tuple of N_TYPES arrays, each (K, n_j, 16).
@@ -238,6 +271,8 @@ class ExogenousMarketEnvJAX(eqx.Module):
         emissions  = jnp.dot(x[idx["xi"]], x[idx["e"]]) + x[idx["eps"]]
         allowances = x[idx["theta"]]
         shortage   = jnp.clip(emissions - allowances, min=0.0)
+        if PENALTY_MODE == 'fixed':                 # LP benchmark: kappa^1 * shortage
+            return -self.kappa * shortage
         return -self.kappa * shortage * x[idx["A_avg"]]
 
     def reward_scale(self, j):

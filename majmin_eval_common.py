@@ -18,10 +18,23 @@ def set_env_from_progress(prog, floor_max):
     os.environ['KETS_FLOOR_MAX'] = str(floor_max)
     box = prog.get('gamma_box')            # runs trained on a non-default box
     if box:
-        for nm, ev in (('init_alloc', 'ALLOC'), ('kappa', 'KAPPA'), ('Afloor', 'FLOOR'), ('mm_share', 'MM')):
+        for nm, ev in (('init_alloc', 'ALLOC'), ('kappa', 'KAPPA'), ('Afloor', 'FLOOR'), ('mm_share', 'MM'),
+                       ('c', 'C'), ('s', 'S')):
+            if nm not in box:
+                continue
             os.environ[f'KETS_{ev}_MIN'] = str(box[nm][0])
             if nm != 'Afloor':
                 os.environ[f'KETS_{ev}_MAX'] = str(box[nm][1])
+    st = prog.get('setting')               # LP-benchmark switches (envs/base_params.py)
+    os.environ['KETS_LAYOUT'] = (st or {}).get('layout', 'v4')
+    if 'A_CEIL' in prog:
+        os.environ['KETS_A_CEIL'] = str(prog['A_CEIL'])
+    if st:
+        os.environ['KETS_DETERMINISTIC'] = '1' if st['deterministic'] else '0'
+        os.environ['KETS_PENALTY'] = st['penalty']
+        os.environ['KETS_NO_MAJOR'] = '1' if st['no_major'] else '0'
+        os.environ['KETS_CAP_F_MULT'] = str(st['cap_f_mult'])
+        os.environ['KETS_CTX_REF'] = ' '.join(str(v) for v in st['ctx_ref'])
     if 'floor_max' in prog:
         assert abs(float(prog['floor_max']) - float(floor_max)) < 1e-9, \
             f"--floor-max {floor_max} != training floor_max {prog['floor_max']}"

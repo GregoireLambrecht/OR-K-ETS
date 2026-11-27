@@ -43,7 +43,7 @@ blocks, _ = make_blocks(env, rung, ctx_ref, T, n, int(prog['S']), int(prog.get('
 nets = [[load_net(args.run_dir, i, j) for j in range(N_TYPES)] for i in range(K + 1)]
 bufs, stats = make_buffers(nets[:K])
 sim = make_sim(env, tuple(stats[j] for j in MINORS), stats[1])
-evaluate = make_evaluator(env, sim, ctx_ref)
+evaluate = make_evaluator(env, sim, ctx_ref, bool(prog.get('major_price_taker', False)))
 hist_minor = {j: [tr[j] for tr in nets[:K]] for j in MINORS}
 rec = prog['records'][-1]
 print(f"regression | {args.run_dir} | rung {rung} T={T} n={n} K={K} | devices {jax.devices()}", flush=True)

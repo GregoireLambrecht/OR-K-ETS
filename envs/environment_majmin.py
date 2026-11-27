@@ -27,7 +27,8 @@ import jax.numpy as jnp
 from jax import vmap
 
 from envs.environment_v2 import MarketClearingEnvV2, stratified_components
-from envs.params_v2 import A_REF, A_CEIL_V2, CLEAR_ITERS_V2, FLOOR_MODE
+from envs.params_v2 import A_REF, A_CEIL_V2, CLEAR_ITERS_V2, FLOOR_MODE, SUPPLY_C
+from envs.base_params import LAYOUT, CTX_REF_V5
 from envs.models_majmin import gather_apply, H_DIM, USE_H
 
 MINORS = (0, 2)
@@ -125,10 +126,21 @@ class MajorMinorEnv(MarketClearingEnvV2):
     """v2 env + one strategic major (type 1 as an aggregate player)."""
 
     def bind(self, g):
-        """The same environment under scenario g = (init_alloc, kappa, Afloor, financial_inst)."""
+        """The same environment under scenario g: v4 (init_alloc, kappa, Afloor, financial_inst);
+        v5 (c, s, Afloor, mm_share, kappa2), c kept in the init_alloc slot (RUNS_SETTING.md)."""
         import equinox as eqx
+        if LAYOUT == 'v5':
+            return eqx.tree_at(lambda e: (e.init_alloc, e.major_share, e.Afloor, e.mm_share, e.kappa),
+                               self, (g[0], g[1], g[2], g[3], g[4]))
         return eqx.tree_at(lambda e: (e.init_alloc, e.kappa, e.Afloor, e.mm_share),
                            self, (g[0], g[1], g[2], g[3]))
+
+    def sigma_S(self):
+        """v5: the exogenous supply is FIXED at gamma_ref (its scale does not move with c, s
+        or mm_share); v4: scaled by the scenario's total allocation (environment_v2)."""
+        if LAYOUT == 'v5':
+            return SUPPLY_C * self.bind(jnp.asarray(CTX_REF_V5, jnp.float32)).total_allocation() / jnp.sqrt(365.0)
+        return super().sigma_S()
 
     def major_mass(self):
         return self.context_weights()[MAJOR]
@@ -259,6 +271,12 @@ class MajorMinorEnv(MarketClearingEnvV2):
             'f0': a0[0], 'R0': apre + sc * out0[0] / (out0[1] + 1e-6),
             'beta0': out0[1],
             'f_minor': jnp.stack([jnp.mean(acts[a][:, 0]) for a in range(len(MINORS))]),
+            # per minor type, mean over its particles: post-trade holdings and production
+            # (fossil, gas) of the day -- trajectories of the LP benchmark (plot_benchmark.py)
+            'theta_minor': jnp.stack([jnp.mean(Xn[a][:, idx['theta']]) for a in range(len(MINORS))]),
+            'q_minor': jnp.stack([jnp.stack([jnp.mean(acts[a][:, 1] * acts[a][:, 2]),
+                                             jnp.mean(acts[a][:, 1] * (1.0 - acts[a][:, 2]))])
+                                  for a in range(len(MINORS))]),
         }
         return (tuple(Xn), X0n, Hn, r0), y
 
